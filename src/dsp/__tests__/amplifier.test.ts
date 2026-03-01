@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { cohenHelieIk, cohenHelieIg, cohenHelieJacobian } from '../amplifier';
+import { cohenHelieIk, cohenHelieIg, cohenHelieJacobian, AmplifierModel } from '../amplifier';
+import type { TubeCircuitParams } from '../amplifier';
 
 describe('Cohen-Helie 12AX7 tube model', () => {
   // Parameters from Cohen & Helie (DAFx 2010), fitted to 12AX7 measurements
@@ -109,5 +110,24 @@ describe('Cohen-Helie 12AX7 tube model', () => {
       expect(Ip).toBeCloseTo(Ik, 6); // Ig ≈ 0 for negative Vgk
       expect(Ip).toBeGreaterThan(0);
     });
+  });
+});
+
+describe('AmplifierModel tube circuit', () => {
+  it('accepts circuit parameters and initializes without error', () => {
+    const params: TubeCircuitParams = {
+      Rp: 100e3, Rg: 1e6, Rk: 1.5e3,
+      Cc_in: 22e-9, Cc_out: 100e-9, Ck: 25e-6,
+      Vpp: 250,
+    };
+    const amp = new AmplifierModel('tube', 1.0, params);
+    expect(amp).toBeDefined();
+  });
+
+  it('defaults to Studer-like params when none provided', () => {
+    const amp = new AmplifierModel('tube', 1.0);
+    // Should not throw — uses default circuit params
+    const out = amp.process(0.1);
+    expect(Number.isFinite(out)).toBe(true);
   });
 });

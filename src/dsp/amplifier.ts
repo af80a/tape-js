@@ -69,15 +69,37 @@ export function cohenHelieJacobian(Vpk: number, Vgk: number): number[] {
   ];
 }
 
+// ---------------------------------------------------------------------------
+// Circuit component types
+// ---------------------------------------------------------------------------
+
+export interface TubeCircuitParams {
+  Rp: number;      // plate load resistor (ohms)
+  Rg: number;      // grid leak resistor (ohms)
+  Rk: number;      // cathode resistor (ohms)
+  Cc_in: number;   // input coupling cap (farads)
+  Cc_out: number;  // output coupling cap (farads)
+  Ck: number;      // cathode bypass cap (farads)
+  Vpp: number;     // plate supply voltage (volts)
+}
+
+const DEFAULT_CIRCUIT: TubeCircuitParams = {
+  Rp: 100e3, Rg: 1e6, Rk: 1.5e3,
+  Cc_in: 22e-9, Cc_out: 100e-9, Ck: 25e-6,
+  Vpp: 250,
+};
+
 export class AmplifierModel {
   private mode: 'tube' | 'transistor';
   private drive: number;
   private bias: number;
+  private circuitParams: TubeCircuitParams;
 
-  constructor(mode: 'tube' | 'transistor', drive = 1.0) {
+  constructor(mode: 'tube' | 'transistor', drive = 1.0, circuitParams?: TubeCircuitParams) {
     this.mode = mode;
     this.drive = drive;
     this.bias = mode === 'tube' ? 0.15 : 0;
+    this.circuitParams = circuitParams ?? DEFAULT_CIRCUIT;
   }
 
   /** Update the drive level. */
