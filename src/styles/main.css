@@ -1,3 +1,8 @@
+/* ==========================================================================
+   Tape Saturator — Main Stylesheet
+   Dark theme, minimal / modern aesthetic
+   ========================================================================== */
+
 *,
 *::before,
 *::after {
@@ -13,13 +18,255 @@ body {
 }
 
 body {
-  font-family: system-ui, -apple-system, sans-serif;
-  background-color: #1a1a1a;
+  font-family: Inter, system-ui, -apple-system, sans-serif;
+  background-color: #1a1a2e;
   color: #e0e0e0;
-  line-height: 1.6;
+  line-height: 1.4;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 32px 16px;
 }
 
+/* --------------------------------------------------------------------------
+   App container
+   -------------------------------------------------------------------------- */
+
 #app {
+  background-color: #16213e;
+  border-radius: 12px;
+  padding: 24px;
+  max-width: 900px;
   width: 100%;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+#app.dragover {
+  outline: 2px dashed #4ecdc4;
+  outline-offset: -4px;
+}
+
+/* --------------------------------------------------------------------------
+   Header
+   -------------------------------------------------------------------------- */
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+header h1 {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: #4ecdc4;
+}
+
+/* --------------------------------------------------------------------------
+   Buttons
+   -------------------------------------------------------------------------- */
+
+.btn {
+  background: #2a2a4a;
+  color: #e0e0e0;
+  border: 1px solid #3a3a5a;
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.btn:hover {
+  background: #3a3a5a;
+  border-color: #4ecdc4;
+}
+
+.btn:active {
+  background: #4a4a6a;
+}
+
+/* --------------------------------------------------------------------------
+   Controls row
+   -------------------------------------------------------------------------- */
+
+.controls-row {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+/* --------------------------------------------------------------------------
+   Knob
+   -------------------------------------------------------------------------- */
+
+.knob-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 72px;
+}
+
+.knob-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  color: #8888aa;
+  letter-spacing: 1px;
+  margin-bottom: 6px;
+  text-align: center;
+}
+
+.knob {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: #2a2a4a;
+  border: 2px solid #3a3a5a;
+  position: relative;
+  cursor: grab;
+  user-select: none;
+}
+
+.knob:active {
+  cursor: grabbing;
+}
+
+.knob-track {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+}
+
+.knob-indicator {
+  position: absolute;
+  width: 2px;
+  height: 18px;
+  background: #4ecdc4;
+  left: 50%;
+  top: 4px;
+  margin-left: -1px;
+  border-radius: 1px;
+  transform-origin: center calc(50% + 4px);
+  pointer-events: none;
+}
+
+.knob-value {
+  font-size: 11px;
+  margin-top: 4px;
+  color: #ccccdd;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  white-space: nowrap;
+}
+
+/* --------------------------------------------------------------------------
+   Select
+   -------------------------------------------------------------------------- */
+
+.select-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 72px;
+}
+
+.select-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  color: #8888aa;
+  letter-spacing: 1px;
+  margin-bottom: 6px;
+  text-align: center;
+}
+
+.select-container select {
+  background: #2a2a4a;
+  color: #e0e0e0;
+  border: 1px solid #3a3a5a;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  outline: none;
+}
+
+.select-container select:focus {
+  border-color: #4ecdc4;
+}
+
+/* --------------------------------------------------------------------------
+   Meters
+   -------------------------------------------------------------------------- */
+
+.meters-row {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.meter-container {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.meter-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  color: #8888aa;
+  letter-spacing: 1px;
+  min-width: 36px;
+}
+
+.meter-track {
+  flex: 1;
+  height: 8px;
+  background: #1a1a2e;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.meter-fill {
   height: 100%;
+  width: 0%;
+  background: #44cc44;
+  border-radius: 4px;
+  transition: width 0.06s linear;
+}
+
+/* --------------------------------------------------------------------------
+   Transport
+   -------------------------------------------------------------------------- */
+
+.transport {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding-top: 8px;
+  border-top: 1px solid #2a2a4a;
+}
+
+.transport-btn {
+  min-width: 56px;
+  text-align: center;
+}
+
+.seek-bar {
+  flex: 1;
+  accent-color: #4ecdc4;
+  cursor: pointer;
+}
+
+.time-display {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: #8888aa;
+  min-width: 96px;
+  text-align: right;
 }
