@@ -23,6 +23,10 @@ export class HysteresisProcessor {
   private alpha = 1.6e-3; // inter-domain coupling (constant)
   private upperLim = 20.0; // output normalization
 
+  // User-facing parameters (stored for cook())
+  private drive = 0.5;
+  private saturation = 0.5;
+
   // Alpha-transform derivative constant
   private readonly dAlpha = 0.75;
 
@@ -36,40 +40,26 @@ export class HysteresisProcessor {
 
   constructor(sampleRate: number) {
     this.T = 1.0 / sampleRate;
-    // Initialize derived parameters with defaults
-    this.setDrive(0.5);
-    this.setSaturation(0.5);
-    this.setWidth(0.5);
+    this.cook();
   }
 
-  /**
-   * Set the drive parameter (0-1).
-   * Higher drive increases the nonlinear distortion.
-   */
   setDrive(v: number): void {
-    this.a = this.Ms / (0.01 + 6.0 * v);
+    this.drive = Math.max(0, Math.min(1, v));
+    this.cook();
   }
 
-  /**
-   * Set the saturation parameter (0-1).
-   * Controls the saturation magnetization level.
-   */
   setSaturation(v: number): void {
-    this.Ms = 0.5 + 1.5 * (1.0 - v);
-    // Recalculate 'a' since it depends on Ms — use current drive ratio
-    // We store the drive-derived divisor implicitly through 'a' and 'Ms'.
-    // To keep it simple, we just recompute 'a' from the current Ms and
-    // the relationship a = Ms / divisor. But we don't store the divisor,
-    // so we need to track drive separately. For now, keep 'a' as-is and
-    // let the user call setDrive after setSaturation if needed.
+    this.saturation = Math.max(0, Math.min(1, v));
+    this.cook();
   }
 
-  /**
-   * Set the width parameter (0-1).
-   * Controls the reversibility of the magnetization process.
-   */
   setWidth(v: number): void {
-    this.c = Math.max(0.01, Math.sqrt(1.0 - v) - 0.01);
+    this.c = Math.max(0.01, Math.sqrt(1.0 - Math.max(0, Math.min(1, v))) - 0.01);
+  }
+
+  private cook(): void {
+    this.Ms = 0.5 + 1.5 * (1.0 - this.saturation);
+    this.a = this.Ms / (0.01 + 6.0 * this.drive);
   }
 
   /**
