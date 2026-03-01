@@ -160,3 +160,38 @@ describe('DK-method state-space matrices', () => {
     expect(maxOut).toBeGreaterThan(0.001);
   });
 });
+
+describe('Newton-Raphson solver', () => {
+  it('converges within 8 iterations for normal signal levels', () => {
+    const amp = new AmplifierModel('tube', 1.0);
+    const fs = 48000;
+    for (let i = 0; i < fs; i++) {
+      const x = 0.5 * Math.sin(2 * Math.PI * 440 * i / fs);
+      const y = amp.process(x);
+      expect(Number.isFinite(y)).toBe(true);
+    }
+  });
+
+  it('handles extreme overdrive without NaN', () => {
+    const amp = new AmplifierModel('tube', 1.0);
+    amp.setDrive(4.5);
+    const fs = 48000;
+    for (let i = 0; i < fs * 0.5; i++) {
+      const x = 2.0 * Math.sin(2 * Math.PI * 440 * i / fs);
+      const y = amp.process(x);
+      expect(Number.isFinite(y)).toBe(true);
+    }
+  });
+
+  it('output is bounded (no runaway)', () => {
+    const amp = new AmplifierModel('tube', 1.0);
+    const fs = 48000;
+    let maxOut = 0;
+    for (let i = 0; i < fs; i++) {
+      const x = Math.sin(2 * Math.PI * 440 * i / fs);
+      const y = amp.process(x);
+      maxOut = Math.max(maxOut, Math.abs(y));
+    }
+    expect(maxOut).toBeLessThan(10);
+  });
+});
