@@ -50,6 +50,32 @@ interface ChannelDSP {
 }
 
 // ---------------------------------------------------------------------------
+// Drive compensation constants
+// ---------------------------------------------------------------------------
+
+const DRIVE_COMP_NEGATIVE_SLOPE = 0.9;
+const DRIVE_COMP_POSITIVE_SLOPE = 0.38;
+const DRIVE_COMP_SMOOTHING = 0.002;
+
+function computeDriveCompDb(driveNorm: number): number {
+  // Convert 0-1 drive knob to approximate dB effect on output level.
+  // Drive 0.5 = unity (0 dB); range roughly -12 to +12 dB.
+  const driveDb = (driveNorm - 0.5) * 24;
+  if (driveDb < 0) {
+    return -DRIVE_COMP_NEGATIVE_SLOPE * driveDb;
+  }
+  return -DRIVE_COMP_POSITIVE_SLOPE * driveDb;
+}
+
+// ---------------------------------------------------------------------------
+// VU Meter ballistics constants
+// ---------------------------------------------------------------------------
+
+const VU_ATTACK_SECONDS = 0.3;
+const VU_RELEASE_SECONDS = 0.55;
+const PEAK_RELEASE_SECONDS = 1.1;
+
+// ---------------------------------------------------------------------------
 // TapeProcessor
 // ---------------------------------------------------------------------------
 
@@ -60,22 +86,34 @@ class TapeProcessor extends AudioWorkletProcessor {
       { name: 'bias',       defaultValue: 0.5,  minValue: 0,    maxValue: 1,   automationRate: 'k-rate' },
       { name: 'drive',      defaultValue: 0.5,  minValue: 0,    maxValue: 1,   automationRate: 'k-rate' },
       { name: 'saturation', defaultValue: 0.5,  minValue: 0,    maxValue: 1,   automationRate: 'k-rate' },
+      { name: 'ampDrive',  defaultValue: 0.5,  minValue: 0,    maxValue: 1,   automationRate: 'k-rate' },
       { name: 'wow',        defaultValue: 0.15, minValue: 0,    maxValue: 1,   automationRate: 'k-rate' },
       { name: 'flutter',    defaultValue: 0.1,  minValue: 0,    maxValue: 1,   automationRate: 'k-rate' },
       { name: 'hiss',       defaultValue: 0.05, minValue: 0,    maxValue: 1,   automationRate: 'k-rate' },
       { name: 'outputGain', defaultValue: 1.0,  minValue: 0.25, maxValue: 4.0, automationRate: 'k-rate' },
-      { name: 'mix',        defaultValue: 1.0,  minValue: 0,    maxValue: 1,   automationRate: 'k-rate' },
     ];
   }
 
   private channels: ChannelDSP[] = [];
   private alive = true;
+  private bypassed = false;
+  private autoGain = false;
+  private autoGainCompLin = 1.0;
+  private autoGainCompTarget = 1.0;
   private meterFrame = 0;
   private nextMeterFrame: number;
 
-  // Store constructor options for reinit
-  private readonly oversampleFactor: number;
-  private readonly tapeSpeed: TapeSpeed;
+  // VU ballistics state
+  private vuPower: number[] = [];
+  private peakHold: number[] = [];
+  private vuAttackCoeff = 0;
+  private vuReleaseCoeff = 0;
+  private peakReleaseCoeff = 0;
+
+  // Store current options for reinit
+  private oversampleFactor: number;
+  private tapeSpeed: TapeSpeed;
+  private currentPreset: MachinePreset;
 
   constructor(options?: { processorOptions?: Record<string, unknown> }) {
     super();
@@ -85,9 +123,14 @@ class TapeProcessor extends AudioWorkletProcessor {
     this.oversampleFactor = (opts.oversample as number) ?? 2;
     this.tapeSpeed = (opts.tapeSpeed as TapeSpeed) ?? 15;
 
-    const preset = PRESETS[presetName] ?? PRESETS['studer'];
+    this.currentPreset = PRESETS[presetName] ?? PRESETS['studer'];
 
-    this.initDSP(2, preset, this.oversampleFactor, this.tapeSpeed);
+    // Compute VU ballistics coefficients
+    this.vuAttackCoeff = Math.exp(-1 / (sampleRate * VU_ATTACK_SECONDS));
+    this.vuReleaseCoeff = Math.exp(-1 / (sampleRate * VU_RELEASE_SECONDS));
+    this.peakReleaseCoeff = Math.exp(-1 / (sampleRate * PEAK_RELEASE_SECONDS));
+
+    this.initDSP(2, this.currentPreset, this.oversampleFactor, this.tapeSpeed);
 
     // Meter timing: send meter data approximately every 50 ms
     this.nextMeterFrame = Math.floor((50 / 1000) * sampleRate);
@@ -96,8 +139,22 @@ class TapeProcessor extends AudioWorkletProcessor {
     this.port.onmessage = (event: MessageEvent) => {
       const data = event.data as { type: string; value?: string };
       if (data.type === 'set-preset') {
-        const newPreset = PRESETS[data.value ?? 'studer'] ?? PRESETS['studer'];
-        this.initDSP(2, newPreset, this.oversampleFactor, this.tapeSpeed);
+        this.currentPreset = PRESETS[data.value ?? 'studer'] ?? PRESETS['studer'];
+        this.initDSP(2, this.currentPreset, this.oversampleFactor, this.tapeSpeed);
+      } else if (data.type === 'set-speed') {
+        this.tapeSpeed = (data.value as unknown as TapeSpeed) ?? 15;
+        this.initDSP(2, this.currentPreset, this.oversampleFactor, this.tapeSpeed);
+      } else if (data.type === 'set-oversample') {
+        this.oversampleFactor = (data.value as unknown as number) ?? 2;
+        this.initDSP(2, this.currentPreset, this.oversampleFactor, this.tapeSpeed);
+      } else if (data.type === 'set-bypass') {
+        this.bypassed = !!data.value;
+      } else if (data.type === 'set-autogain') {
+        this.autoGain = !!data.value;
+        if (!this.autoGain) {
+          this.autoGainCompLin = 1.0;
+          this.autoGainCompTarget = 1.0;
+        }
       } else if (data.type === 'dispose') {
         this.alive = false;
       }
@@ -113,9 +170,13 @@ class TapeProcessor extends AudioWorkletProcessor {
     const fs = sampleRate;
     this.channels = [];
 
+    // Initialize VU ballistics arrays
+    this.vuPower = Array(channels).fill(1e-10);
+    this.peakHold = Array(channels).fill(0);
+
     for (let ch = 0; ch < channels; ch++) {
       const inputXfmr = new TransformerModel(fs, preset.inputTransformer);
-      const recordAmp = new AmplifierModel(preset.ampType, 1.0, preset.tubeCircuit);
+      const recordAmp = new AmplifierModel(preset.ampType, preset.recordAmpDrive, preset.tubeCircuit, fs * oversampleFactor);
 
       const bias = new BiasOscillator(fs * oversampleFactor);
       bias.setLevel(preset.biasDefault);
@@ -128,11 +189,11 @@ class TapeProcessor extends AudioWorkletProcessor {
 
       const oversampler = new Oversampler(oversampleFactor);
       const head = new HeadModel(fs, speed);
-      const playbackAmp = new AmplifierModel(preset.ampType, 0.8, preset.tubeCircuit);
+      const playbackAmp = new AmplifierModel(preset.ampType, preset.playbackAmpDrive, preset.tubeCircuit, fs);
       const playbackEQ = new TapeEQ(fs, preset.eqStandard, speed, 'playback');
       const outputXfmr = new TransformerModel(fs, preset.outputTransformer);
 
-      const transport = new TransportModel(fs);
+      const transport = new TransportModel(fs, ch);
       transport.setWow(preset.wowDefault);
       transport.setFlutter(preset.flutterDefault);
 
@@ -176,18 +237,19 @@ class TapeProcessor extends AudioWorkletProcessor {
     const biasParam  = parameters['bias'][0];
     const drive      = parameters['drive'][0];
     const saturation = parameters['saturation'][0];
+    const ampDrive   = parameters['ampDrive'][0];
     const wow        = parameters['wow'][0];
     const flutter    = parameters['flutter'][0];
     const hiss       = parameters['hiss'][0];
     const outputGain = parameters['outputGain'][0];
-    const mix        = parameters['mix'][0];
-
-    // Metering accumulators
-    const rms = new Float32Array(numChannels);
-    const peak = new Float32Array(numChannels);
 
     // Scratch buffer for single-sample oversampling
     const singleSample = new Float32Array(1);
+
+    // Cache ballistics coefficients as locals for inner loop
+    const attackCoeff = this.vuAttackCoeff;
+    const releaseCoeff = this.vuReleaseCoeff;
+    const peakRelCoeff = this.peakReleaseCoeff;
 
     for (let ch = 0; ch < numChannels; ch++) {
       const dsp = this.channels[ch];
@@ -198,12 +260,17 @@ class TapeProcessor extends AudioWorkletProcessor {
       dsp.bias.setLevel(biasParam);
       dsp.hysteresis.setDrive(drive);
       dsp.hysteresis.setSaturation(saturation);
+      dsp.recordAmp.setDrive(ampDrive);
+      dsp.playbackAmp.setDrive(ampDrive * 0.8);
       dsp.transport.setWow(wow);
       dsp.transport.setFlutter(flutter);
       dsp.noise.setLevel(hiss);
 
-      let sumSq = 0;
-      let peakVal = 0;
+      // Compute deterministic drive compensation target once per block
+      if (this.autoGain) {
+        const compDb = computeDriveCompDb(drive) + computeDriveCompDb(saturation) * 0.5;
+        this.autoGainCompTarget = Math.max(0.25, Math.min(8, Math.pow(10, compDb / 20)));
+      }
 
       for (let i = 0; i < blockSize; i++) {
         const dry = inp[i];
@@ -212,16 +279,15 @@ class TapeProcessor extends AudioWorkletProcessor {
         // Input transformer
         x = dsp.inputXfmr.process(x);
 
-        // Record amplifier
-        x = dsp.recordAmp.process(x);
-
         // Record EQ
         x = dsp.recordEQ.process(x);
 
-        // Oversample for hysteresis: upsample, apply bias + hysteresis, downsample
+        // Oversample for record amp + bias + hysteresis (anti-aliases harmonics
+        // from both the tube nonlinearity and the tape hysteresis model)
         singleSample[0] = x;
         const upsampled = dsp.oversampler.upsample(singleSample);
         for (let j = 0; j < upsampled.length; j++) {
+          upsampled[j] = dsp.recordAmp.process(upsampled[j]);
           upsampled[j] = dsp.bias.process(upsampled[j]);
           upsampled[j] = dsp.hysteresis.process(upsampled[j]);
         }
@@ -249,29 +315,41 @@ class TapeProcessor extends AudioWorkletProcessor {
         // Clamp to [-2, 2]
         x = Math.max(-2, Math.min(2, x));
 
-        // Dry/wet mix with output gain
-        out[i] = (dry * (1 - mix) + x * mix) * outputGain;
-
-        // Metering
-        const absOut = Math.abs(out[i]);
-        sumSq += out[i] * out[i];
-        if (absOut > peakVal) {
-          peakVal = absOut;
+        // Apply per-sample smoothed drive compensation
+        if (this.autoGain && !this.bypassed) {
+          this.autoGainCompLin += (this.autoGainCompTarget - this.autoGainCompLin) * DRIVE_COMP_SMOOTHING;
+          x *= this.autoGainCompLin;
         }
-      }
 
-      rms[ch] = Math.sqrt(sumSq / blockSize);
-      peak[ch] = peakVal;
+        // Bypass or processed output
+        out[i] = this.bypassed ? dry : x * outputGain;
+
+        // VU ballistics metering (per-sample)
+        const power = out[i] * out[i];
+        const vuCoeff = power > this.vuPower[ch] ? attackCoeff : releaseCoeff;
+        this.vuPower[ch] = vuCoeff * this.vuPower[ch] + (1 - vuCoeff) * power;
+        this.peakHold[ch] = Math.max(Math.abs(out[i]), this.peakHold[ch] * peakRelCoeff);
+      }
     }
 
     // Send meter data approximately every 50 ms
     this.meterFrame += blockSize;
     if (this.meterFrame >= this.nextMeterFrame) {
       this.meterFrame = 0;
+
+      const vuDb: number[] = [];
+      const peakDb: number[] = [];
+      for (let ch = 0; ch < numChannels; ch++) {
+        const vu = 10 * Math.log10(Math.max(this.vuPower[ch], 1e-10));
+        vuDb.push(Math.max(-20, Math.min(9, vu)));
+        const pk = this.peakHold[ch] > 0 ? 20 * Math.log10(this.peakHold[ch]) : -20;
+        peakDb.push(Math.max(-20, Math.min(9, pk)));
+      }
+
       this.port.postMessage({
         type: 'meters',
-        rms: Array.from(rms),
-        peak: Array.from(peak),
+        vuDb,
+        peakDb,
       });
     }
 
