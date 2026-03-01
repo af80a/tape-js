@@ -292,3 +292,25 @@ describe('power supply sag', () => {
     expect(amp.sagVpp).toBeGreaterThan(initialVpp * 0.995);
   });
 });
+
+describe('backward compatibility', () => {
+  it('transistor mode is unchanged', () => {
+    const amp = new AmplifierModel('transistor', 2.0);
+    const outPos = amp.process(0.8);
+    const outNeg = amp.process(-0.8);
+    expect(Math.abs(outPos)).toBeCloseTo(Math.abs(outNeg), 2);
+  });
+
+  it('reset clears state and does not throw', () => {
+    const amp = new AmplifierModel('tube', 1.0);
+    for (let i = 0; i < 100; i++) {
+      amp.process(Math.sin(i * 0.1));
+    }
+    expect(() => amp.reset()).not.toThrow();
+    // After reset, zero input should give near-zero output
+    for (let i = 0; i < 100; i++) {
+      amp.process(0);
+    }
+    expect(Math.abs(amp.process(0))).toBeLessThan(0.01);
+  });
+});

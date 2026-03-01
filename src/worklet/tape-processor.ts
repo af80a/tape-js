@@ -115,7 +115,7 @@ class TapeProcessor extends AudioWorkletProcessor {
 
     for (let ch = 0; ch < channels; ch++) {
       const inputXfmr = new TransformerModel(fs, preset.inputTransformer);
-      const recordAmp = new AmplifierModel(preset.ampType, 1.0);
+      const recordAmp = new AmplifierModel(preset.ampType, 1.0, preset.tubeCircuit);
 
       const bias = new BiasOscillator(fs * oversampleFactor);
       bias.setLevel(preset.biasDefault);
@@ -128,7 +128,7 @@ class TapeProcessor extends AudioWorkletProcessor {
 
       const oversampler = new Oversampler(oversampleFactor);
       const head = new HeadModel(fs, speed);
-      const playbackAmp = new AmplifierModel(preset.ampType, 0.8);
+      const playbackAmp = new AmplifierModel(preset.ampType, 0.8, preset.tubeCircuit);
       const playbackEQ = new TapeEQ(fs, preset.eqStandard, speed, 'playback');
       const outputXfmr = new TransformerModel(fs, preset.outputTransformer);
 
