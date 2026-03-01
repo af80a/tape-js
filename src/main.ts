@@ -27,9 +27,12 @@ async function ensureAudioContext(): Promise<void> {
 
   audioCtx = new AudioContext();
 
-  // Load the worklet module — Vite resolves the ?worker&url import at build
-  // time, but we use import.meta.url based resolution for dev mode.
-  const workletUrl = new URL('./worklet/tape-processor.ts', import.meta.url).href;
+  // Load the worklet module.
+  // In dev: Vite serves .ts with on-the-fly transpilation.
+  // In prod: separate entry built to /worklets/tape-processor.js.
+  const workletUrl = import.meta.env.DEV
+    ? '/src/worklet/tape-processor.ts'
+    : '/worklets/tape-processor.js';
   await audioCtx.audioWorklet.addModule(workletUrl);
 
   // Create the tape processor node
