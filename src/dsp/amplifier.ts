@@ -145,7 +145,7 @@ export class AmplifierModel {
     fs = 48000,
   ) {
     this.mode = mode;
-    this.drive = drive;
+    this.drive = 0.5 + drive * 4.0;  // 0→0.5x, 0.5→2.5x, 1→4.5x
     this.circuitParams = circuitParams ?? DEFAULT_CIRCUIT;
     this.fs = fs;
 
@@ -159,7 +159,7 @@ export class AmplifierModel {
   }
 
   setDrive(v: number): void {
-    this.drive = v;
+    this.drive = 0.5 + v * 4.0;  // 0→0.5x, 0.5→2.5x, 1→4.5x
   }
 
   process(input: number): number {

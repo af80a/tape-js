@@ -174,7 +174,7 @@ describe('Newton-Raphson solver', () => {
 
   it('handles extreme overdrive without NaN', () => {
     const amp = new AmplifierModel('tube', 1.0);
-    amp.setDrive(4.5);
+    amp.setDrive(1.0);
     const fs = 48000;
     for (let i = 0; i < fs * 0.5; i++) {
       const x = 2.0 * Math.sin(2 * Math.PI * 440 * i / fs);
@@ -196,10 +196,66 @@ describe('Newton-Raphson solver', () => {
   });
 });
 
+describe('output normalization and drive', () => {
+  it('output is in approximately [-1, 1] range for normal input', () => {
+    const amp = new AmplifierModel('tube', 0.5);
+    const fs = 48000;
+    let maxOut = 0;
+    for (let i = 0; i < fs; i++) {
+      const x = 0.5 * Math.sin(2 * Math.PI * 440 * i / fs);
+      const y = amp.process(x);
+      maxOut = Math.max(maxOut, Math.abs(y));
+    }
+    // Should be in a reasonable range, not raw plate voltages
+    expect(maxOut).toBeGreaterThan(0.05);
+    expect(maxOut).toBeLessThan(2.0);
+  });
+
+  it('higher drive produces more saturation (less linear)', () => {
+    const fs = 48000;
+
+    // Low drive
+    const ampLow = new AmplifierModel('tube', 0.2);
+    let maxLow = 0;
+    for (let i = 0; i < fs; i++) {
+      const x = 0.5 * Math.sin(2 * Math.PI * 440 * i / fs);
+      maxLow = Math.max(maxLow, Math.abs(ampLow.process(x)));
+    }
+
+    // High drive
+    const ampHigh = new AmplifierModel('tube', 1.0);
+    let maxHigh = 0;
+    for (let i = 0; i < fs; i++) {
+      const x = 0.5 * Math.sin(2 * Math.PI * 440 * i / fs);
+      maxHigh = Math.max(maxHigh, Math.abs(ampHigh.process(x)));
+    }
+
+    // High drive should produce higher output (more gain into saturation)
+    expect(maxHigh).toBeGreaterThan(maxLow);
+  });
+
+  it('tube mode produces asymmetric clipping (even harmonics)', () => {
+    const amp = new AmplifierModel('tube', 1.0);
+    const fs = 48000;
+
+    // Process 1s of sine, skip transient
+    const outputs: number[] = [];
+    for (let i = 0; i < fs; i++) {
+      const x = 0.8 * Math.sin(2 * Math.PI * 440 * i / fs);
+      outputs.push(amp.process(x));
+    }
+
+    // Check asymmetry: positive and negative peaks should differ
+    const posPeak = Math.max(...outputs.slice(fs * 0.5));
+    const negPeak = Math.min(...outputs.slice(fs * 0.5));
+    expect(Math.abs(posPeak)).not.toBeCloseTo(Math.abs(negPeak), 1);
+  });
+});
+
 describe('power supply sag', () => {
   it('Vpp sags under sustained heavy signal', () => {
     const amp = new AmplifierModel('tube', 1.0);
-    amp.setDrive(4.5);
+    amp.setDrive(1.0);
     const fs = 48000;
     const initialVpp = amp.sagVpp;
 
@@ -216,7 +272,7 @@ describe('power supply sag', () => {
 
   it('supply recovers after signal stops', () => {
     const amp = new AmplifierModel('tube', 1.0);
-    amp.setDrive(4.5);
+    amp.setDrive(1.0);
     const fs = 48000;
 
     // Heavy signal for 0.5s
