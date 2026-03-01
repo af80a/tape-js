@@ -131,3 +131,32 @@ describe('AmplifierModel tube circuit', () => {
     expect(Number.isFinite(out)).toBe(true);
   });
 });
+
+describe('DK-method state-space matrices', () => {
+  it('computes discretized matrices from circuit params', () => {
+    const amp = new AmplifierModel('tube', 1.0);
+    const out = amp.process(0);
+    expect(Number.isFinite(out)).toBe(true);
+  });
+
+  it('DC operating point: zero input produces near-zero AC output', () => {
+    const amp = new AmplifierModel('tube', 1.0);
+    let lastOut = 0;
+    for (let i = 0; i < 1000; i++) {
+      lastOut = amp.process(0);
+    }
+    expect(Math.abs(lastOut)).toBeLessThan(0.01);
+  });
+
+  it('state-space produces non-zero output for non-zero input', () => {
+    const amp = new AmplifierModel('tube', 1.0);
+    const fs = 48000;
+    let maxOut = 0;
+    for (let i = 0; i < fs * 0.1; i++) {
+      const x = 0.5 * Math.sin(2 * Math.PI * 440 * i / fs);
+      const y = amp.process(x);
+      maxOut = Math.max(maxOut, Math.abs(y));
+    }
+    expect(maxOut).toBeGreaterThan(0.001);
+  });
+});

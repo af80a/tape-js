@@ -89,77 +89,297 @@ const DEFAULT_CIRCUIT: TubeCircuitParams = {
   Vpp: 250,
 };
 
+// ---------------------------------------------------------------------------
+// AmplifierModel
+// ---------------------------------------------------------------------------
+
 export class AmplifierModel {
   private mode: 'tube' | 'transistor';
   private drive: number;
-  private bias: number;
   private circuitParams: TubeCircuitParams;
+  private fs: number;
 
-  constructor(mode: 'tube' | 'transistor', drive = 1.0, circuitParams?: TubeCircuitParams) {
+  // Tube mode state
+  private x = [0, 0, 0];         // [V_Cc_in, V_Cc_out, V_Ck]
+  private i_nl_prev = [0, 0];    // [Ip, Ig] from previous sample
+  sagVpp = 0;                     // plate supply (modified by sag model)
+  private dcPlateVoltage = 1;     // DC plate voltage for normalization
+
+  // Output load resistance (next stage grid input impedance)
+  private static readonly RLOAD = 1e6;
+
+  // State-space matrices (precomputed from circuit topology + trapezoidal rule)
+  // v_nl = Hd*x + Kd_vin*u + Kd_vpp*Vpp + Ld*i_nl
+  private Hd = new Float64Array(6);      // 2x3 row-major
+  private Kd_vin = new Float64Array(2);  // 2x1
+  private Kd_vpp = new Float64Array(2);  // 2x1
+  private Ld = new Float64Array(4);      // 2x2 row-major
+  // x_next = diag(Ad)*x + Bd_vin*u + Bd_vpp*Vpp + Cd*i_nl
+  private Ad = new Float64Array(3);      // diagonal
+  private Bd_vin = new Float64Array(3);  // 3x1
+  private Bd_vpp = new Float64Array(3);  // 3x1
+  private Cd = new Float64Array(6);      // 3x2 row-major
+  // y = Dd*x + Ed_vpp*Vpp + Fd*i_nl
+  private Dd = new Float64Array(3);      // 1x3
+  private Ed_vpp = 0;
+  private Fd = new Float64Array(2);      // 1x2
+
+  constructor(
+    mode: 'tube' | 'transistor',
+    drive = 1.0,
+    circuitParams?: TubeCircuitParams,
+    fs = 48000,
+  ) {
     this.mode = mode;
     this.drive = drive;
-    this.bias = mode === 'tube' ? 0.15 : 0;
     this.circuitParams = circuitParams ?? DEFAULT_CIRCUIT;
+    this.fs = fs;
+
+    if (mode === 'tube') {
+      this.initStateSpace();
+      this.solveDCOperatingPoint();
+    }
   }
 
-  /** Update the drive level. */
   setDrive(v: number): void {
     this.drive = v;
   }
 
-  /**
-   * Process a single input sample through the amplifier model.
-   * Applies drive gain then routes to the appropriate saturation curve.
-   */
   process(input: number): number {
     const driven = input * this.drive;
-
     if (this.mode === 'tube') {
-      return this.tubeSaturate(driven);
-    } else {
-      return this.transistorSaturate(driven);
+      return this.tubeProcess(driven);
+    }
+    return this.transistorSaturate(driven);
+  }
+
+  reset(): void {
+    if (this.mode === 'tube') {
+      this.solveDCOperatingPoint();
     }
   }
 
-  /**
-   * Tube saturation — asymmetric soft clipping via biased tanh.
-   *
-   * The bias offset shifts the operating point on the tanh curve,
-   * causing positive and negative excursions to clip differently.
-   * This asymmetry generates even-order harmonics (2nd, 4th, etc.)
-   * characteristic of vacuum tube distortion.
-   */
-  private tubeSaturate(x: number): number {
-    const biased = x + this.bias;
-    const saturated = Math.tanh(biased) - Math.tanh(this.bias);
-    const normFactor = 1.0 / (Math.tanh(1.0 + this.bias) - Math.tanh(this.bias));
-    return saturated * normFactor;
-  }
+  // -------------------------------------------------------------------------
+  // State-space matrix derivation (DK-method, trapezoidal discretization)
+  // -------------------------------------------------------------------------
 
   /**
-   * Transistor saturation — symmetric hard-knee clipping.
+   * Derive discrete state-space matrices from circuit topology.
    *
-   * Below the threshold the signal passes linearly. Above the threshold,
-   * the excess is compressed via tanh, creating a sharp knee transition.
-   * The symmetric clipping generates odd-order harmonics (3rd, 5th, etc.)
-   * characteristic of solid-state amplifier distortion.
+   * Circuit: common-cathode 12AX7 triode stage.
+   *   Input --[Cc_in]-- grid --[Rg]-- GND
+   *   Vpp --[Rp]-- plate --(triode)-- cathode --[Rk||Ck]-- GND
+   *   plate --[Cc_out]-- output --[Rl]-- GND
+   *
+   * Trapezoidal rule replaces each capacitor C with companion resistance
+   * Rc = T/(2C) in series with history voltage source (the state variable).
+   *
+   * KCL at 4 nodes (grid, plate, cathode, output) solved symbolically
+   * yields closed-form matrices relating state x, input Vin, supply Vpp,
+   * and nonlinear tube currents [Ip, Ig] to port voltages, state update,
+   * and output.
    */
+  private initStateSpace(): void {
+    const T = 1 / this.fs;
+    const { Rp, Rg, Rk, Cc_in, Cc_out, Ck } = this.circuitParams;
+    const Rl = AmplifierModel.RLOAD;
+
+    // Companion resistances
+    const Rc1 = T / (2 * Cc_in);
+    const Rc2 = T / (2 * Cc_out);
+    const Rc3 = T / (2 * Ck);
+
+    // Node conductance sums
+    const G1 = 1 / Rc1 + 1 / Rg;
+    const G2 = 1 / Rp + 1 / (Rc2 + Rl);
+    const G3 = 1 / Rk + 1 / Rc3;
+
+    // Node voltage coefficients:
+    //   V1 = a1*Vin - b1*x1 - c1*Ig
+    //   V2 = a2*Vpp + b2*x2 - c2*Ip
+    //   V3 = a3*(Ip+Ig) + b3*x3
+    //   V4 = rl_frac*(V2 - x2)
+    const a1 = 1 / (Rc1 * G1);
+    const b1 = a1;
+    const c1 = 1 / G1;
+    const a2 = 1 / (Rp * G2);
+    const b2 = 1 / ((Rc2 + Rl) * G2);
+    const c2 = 1 / G2;
+    const a3 = 1 / G3;
+    const b3 = 1 / (Rc3 * G3);
+    const rl_frac = Rl / (Rc2 + Rl);
+    const rc_frac = Rc2 / (Rc2 + Rl);
+
+    // v_nl = Hd*x + Kd_vin*Vin + Kd_vpp*Vpp + Ld*i_nl
+    // Vpk = V2 - V3, Vgk = V1 - V3
+    this.Hd[0] = 0;     this.Hd[1] = b2;    this.Hd[2] = -b3;   // Vpk
+    this.Hd[3] = -b1;   this.Hd[4] = 0;     this.Hd[5] = -b3;   // Vgk
+
+    this.Kd_vin[0] = 0;  this.Kd_vin[1] = a1;
+    this.Kd_vpp[0] = a2; this.Kd_vpp[1] = 0;
+
+    this.Ld[0] = -(c2 + a3); this.Ld[1] = -a3;
+    this.Ld[2] = -a3;        this.Ld[3] = -(c1 + a3);
+
+    // x_next = Ad*x + Bd_vin*Vin + Bd_vpp*Vpp + Cd*i_nl
+    this.Ad[0] = 2 * b1 - 1;
+    this.Ad[1] = 2 * rc_frac * b2 + 2 * rl_frac - 1;
+    this.Ad[2] = 2 * b3 - 1;
+
+    this.Bd_vin[0] = 2 - 2 * a1; this.Bd_vin[1] = 0; this.Bd_vin[2] = 0;
+    this.Bd_vpp[0] = 0; this.Bd_vpp[1] = 2 * rc_frac * a2; this.Bd_vpp[2] = 0;
+
+    this.Cd[0] = 0;                this.Cd[1] = 2 * c1;
+    this.Cd[2] = -2 * rc_frac * c2; this.Cd[3] = 0;
+    this.Cd[4] = 2 * a3;           this.Cd[5] = 2 * a3;
+
+    // y = Dd*x + Ed_vpp*Vpp + Fd*i_nl  (Ed_vin = 0)
+    this.Dd[0] = 0; this.Dd[1] = rl_frac * (b2 - 1); this.Dd[2] = 0;
+    this.Ed_vpp = rl_frac * a2;
+    this.Fd[0] = -rl_frac * c2; this.Fd[1] = 0;
+  }
+
+  // -------------------------------------------------------------------------
+  // DC operating point solver
+  // -------------------------------------------------------------------------
+
+  private solveDCOperatingPoint(): void {
+    const { Rp, Rk, Vpp } = this.circuitParams;
+
+    // At DC: capacitors are open circuits.
+    // Grid at ground (Rg pulls to 0), so Vgk = -Vk.
+    // Two-level Newton solve: outer on Vk, inner 1D Newton on Ik.
+    let Vk = 1.0;
+
+    for (let outer = 0; outer < 50; outer++) {
+      const Vgk = -Vk;
+      const Ig = cohenHelieIg(Vgk);
+
+      // Inner 1D Newton: h(Ik) = Ik - cohenHelieIk(Vpp-(Ik-Ig)*Rp-Vk, Vgk)
+      let Ik = 0.001;
+      for (let inner = 0; inner < 20; inner++) {
+        const Vpk = Vpp - (Ik - Ig) * Rp - Vk;
+        const Ik_eval = cohenHelieIk(Vpk, Vgk);
+        const residual = Ik - Ik_eval;
+        if (Math.abs(residual) < 1e-9) break;
+        // h'(Ik) = 1 + Rp * dIk/dVpk
+        const J = cohenHelieJacobian(Vpk, Vgk);
+        const dh = 1 + Rp * J[0];
+        if (Math.abs(dh) < 1e-15) break;
+        Ik -= residual / dh;
+      }
+
+      const Vk_new = Ik * Rk;
+      if (Math.abs(Vk_new - Vk) < 1e-6) break;
+      Vk = Vk_new;
+    }
+
+    const Ig_dc = cohenHelieIg(-Vk);
+    const Ik_dc = Vk / Rk;
+    const Ip_dc = Ik_dc - Ig_dc;
+    const Vp_dc = Vpp - Ip_dc * Rp;
+    this.dcPlateVoltage = Vp_dc;
+
+    // Initialize capacitor states at DC operating point
+    this.x[0] = 0;       // V_Cc_in = 0 (no DC across input coupling cap)
+    this.x[1] = Vp_dc;   // V_Cc_out = plate voltage (DC blocked at output)
+    this.x[2] = Vk;      // V_Ck = cathode voltage
+
+    this.i_nl_prev[0] = Ip_dc;
+    this.i_nl_prev[1] = Ig_dc;
+    this.sagVpp = Vpp;
+
+    // Warmup: run the discrete system to its own numerical steady state.
+    // The continuous DC solution has tiny rounding mismatch with the discrete
+    // trapezoidal system — a few hundred samples of silence eliminate the
+    // startup transient.
+    for (let i = 0; i < 2000; i++) {
+      this.tubeProcess(0);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Per-sample tube processing with Newton-Raphson solver
+  // -------------------------------------------------------------------------
+
+  private tubeProcess(u: number): number {
+    const x = this.x;
+    const Vpp = this.sagVpp;
+
+    // Newton-Raphson: solve for nonlinear tube currents [Ip, Ig]
+    let Ip = this.i_nl_prev[0];
+    let Ig = this.i_nl_prev[1];
+
+    for (let iter = 0; iter < 8; iter++) {
+      // Tube port voltages: v_nl = Hd*x + Kd_vin*u + Kd_vpp*Vpp + Ld*i_nl
+      const Vpk = this.Hd[1] * x[1] + this.Hd[2] * x[2]
+                + this.Kd_vpp[0] * Vpp
+                + this.Ld[0] * Ip + this.Ld[1] * Ig;
+      const Vgk = this.Hd[3] * x[0] + this.Hd[5] * x[2]
+                + this.Kd_vin[1] * u
+                + this.Ld[2] * Ip + this.Ld[3] * Ig;
+
+      // Evaluate tube model at current port voltages
+      const Ik_eval = cohenHelieIk(Vpk, Vgk);
+      const Ig_eval = cohenHelieIg(Vgk);
+      const Ip_eval = Ik_eval - Ig_eval;
+
+      // Residual: difference between assumed and evaluated currents
+      const r0 = Ip - Ip_eval;
+      const r1 = Ig - Ig_eval;
+      if (Math.abs(r0) < 1e-9 && Math.abs(r1) < 1e-9) break;
+
+      // Jacobian J = d[Ip,Ig]/d[Vpk,Vgk]
+      const J = cohenHelieJacobian(Vpk, Vgk);
+
+      // Newton matrix: M = I - J * Ld  (2x2)
+      const M00 = 1 - (J[0] * this.Ld[0] + J[1] * this.Ld[2]);
+      const M01 = -(J[0] * this.Ld[1] + J[1] * this.Ld[3]);
+      const M10 = -(J[2] * this.Ld[0] + J[3] * this.Ld[2]);
+      const M11 = 1 - (J[2] * this.Ld[1] + J[3] * this.Ld[3]);
+
+      const det = M00 * M11 - M01 * M10;
+      if (Math.abs(det) < 1e-15) break;
+
+      // Solve M * delta = -residual via Cramer's rule
+      const d0 = -(M11 * r0 - M01 * r1) / det;
+      const d1 = -(-M10 * r0 + M00 * r1) / det;
+      Ip += d0;
+      Ig += d1;
+    }
+
+    // Store converged currents for next sample's initial guess
+    this.i_nl_prev[0] = Ip;
+    this.i_nl_prev[1] = Ig;
+
+    // Output: y = Dd*x + Ed_vpp*Vpp + Fd*i_nl
+    const y = this.Dd[1] * x[1]
+            + this.Ed_vpp * Vpp
+            + this.Fd[0] * Ip;
+
+    // State update: x_next = Ad*x + Bd_vin*u + Bd_vpp*Vpp + Cd*i_nl
+    const x0 = this.Ad[0] * x[0] + this.Bd_vin[0] * u + this.Cd[1] * Ig;
+    const x1 = this.Ad[1] * x[1] + this.Bd_vpp[1] * Vpp + this.Cd[2] * Ip;
+    const x2 = this.Ad[2] * x[2] + this.Cd[4] * Ip + this.Cd[5] * Ig;
+    this.x[0] = x0;
+    this.x[1] = x1;
+    this.x[2] = x2;
+
+    // Normalize output: raw y is in volts, scale to ~[-1,1]
+    return y / this.dcPlateVoltage;
+  }
+
+  // -------------------------------------------------------------------------
+  // Transistor mode (unchanged)
+  // -------------------------------------------------------------------------
+
   private transistorSaturate(x: number): number {
     const threshold = 0.85;
     const absX = Math.abs(x);
-
-    if (absX < threshold) {
-      return x;
-    }
-
+    if (absX < threshold) return x;
     const excess = absX - threshold;
     const compressed =
       threshold + (1 - threshold) * Math.tanh(excess / (1 - threshold));
     return Math.sign(x) * compressed;
-  }
-
-  /** Reset processor state. This model is stateless, so nothing to do. */
-  reset(): void {
-    // Stateless — no internal state to clear.
   }
 }
