@@ -1,12 +1,73 @@
 /**
- * Amplifier waveshaper models for tube and transistor saturation.
+ * Amplifier models for tube and transistor saturation.
  *
- * - Tube mode: Asymmetric soft clipping via biased tanh, producing
- *   even harmonics characteristic of vacuum tube amplifiers.
+ * - Tube mode: Nodal DK-Method circuit simulation of a common-cathode
+ *   12AX7 triode stage with Cohen-Helie equations and power supply sag.
  * - Transistor mode: Symmetric hard-knee clipping with tanh compression
  *   above a threshold, producing odd harmonics characteristic of
  *   solid-state amplifiers.
  */
+
+// ---------------------------------------------------------------------------
+// Cohen-Helie 12AX7 tube model (DAFx 2010, fitted to measurements)
+// ---------------------------------------------------------------------------
+
+const CH_Gk = 2.14e-3;     // cathode current scaling
+const CH_mu = 100.8;        // amplification factor
+const CH_Ek = 1.303;        // cathode current exponent
+const CH_Ck = 3.04;         // cathode transition smoothness
+const CH_Gg = 6.06e-4;      // grid current scaling
+const CH_Eg = 1.354;        // grid current exponent
+const CH_Cg = 13.9;         // grid transition smoothness
+
+/** Soft-plus: log(1 + exp(x)) with overflow protection. */
+function softplus(x: number): number {
+  if (x > 30) return x;
+  if (x < -30) return 0;
+  return Math.log(1 + Math.exp(x));
+}
+
+/** Cohen-Helie cathode current Ik(Vpk, Vgk). */
+export function cohenHelieIk(Vpk: number, Vgk: number): number {
+  const arg = CH_Ck * (Vpk / CH_mu + Vgk);
+  return CH_Gk * Math.pow(softplus(arg) / CH_Ck, CH_Ek);
+}
+
+/** Cohen-Helie grid current Ig(Vgk). */
+export function cohenHelieIg(Vgk: number): number {
+  const arg = CH_Cg * Vgk;
+  return CH_Gg * Math.pow(softplus(arg) / CH_Cg, CH_Eg);
+}
+
+/**
+ * Analytical Jacobian of [Ip, Ig] w.r.t. [Vpk, Vgk].
+ * Returns flat array [dIp/dVpk, dIp/dVgk, dIg/dVpk, dIg/dVgk].
+ */
+export function cohenHelieJacobian(Vpk: number, Vgk: number): number[] {
+  // dIk/d(arg) chain
+  const argK = CH_Ck * (Vpk / CH_mu + Vgk);
+  const spK = softplus(argK);
+  const sigK = 1 / (1 + Math.exp(-argK)); // sigmoid = d(softplus)/dx
+  const baseK = spK / CH_Ck;
+  const dIk_dargK = CH_Gk * CH_Ek * Math.pow(baseK, CH_Ek - 1) * sigK / CH_Ck;
+  const dIk_dVpk = dIk_dargK * CH_Ck / CH_mu;
+  const dIk_dVgk = dIk_dargK * CH_Ck;
+
+  // dIg/dVgk
+  const argG = CH_Cg * Vgk;
+  const spG = softplus(argG);
+  const sigG = 1 / (1 + Math.exp(-argG));
+  const baseG = spG / CH_Cg;
+  const dIg_dVgk = CH_Gg * CH_Eg * Math.pow(baseG, CH_Eg - 1) * sigG;
+
+  // Ip = Ik - Ig, so dIp/dVpk = dIk/dVpk, dIp/dVgk = dIk/dVgk - dIg/dVgk
+  return [
+    dIk_dVpk,              // dIp/dVpk (Ig independent of Vpk)
+    dIk_dVgk - dIg_dVgk,   // dIp/dVgk
+    0,                      // dIg/dVpk
+    dIg_dVgk,              // dIg/dVgk
+  ];
+}
 
 export class AmplifierModel {
   private mode: 'tube' | 'transistor';

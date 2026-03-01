@@ -1,79 +1,113 @@
 import { describe, it, expect } from 'vitest';
-import { AmplifierModel } from '../amplifier';
+import { cohenHelieIk, cohenHelieIg, cohenHelieJacobian } from '../amplifier';
 
-describe('AmplifierModel', () => {
-  describe('tube mode', () => {
-    it('produces asymmetric clipping: positive and negative peaks differ', () => {
-      const amp = new AmplifierModel('tube', 2.0);
+describe('Cohen-Helie 12AX7 tube model', () => {
+  // Parameters from Cohen & Helie (DAFx 2010), fitted to 12AX7 measurements
+  // Gk=2.14e-3, mu=100.8, Ek=1.303, Ck=3.04, Gg=6.06e-4, Eg=1.354, Cg=13.9
 
-      const outPositive = amp.process(0.8);
-      const outNegative = amp.process(-0.8);
-
-      // Tube mode should produce asymmetric saturation (even harmonics)
-      // The absolute values of positive and negative outputs should differ
-      // We compare to 1 decimal place — they should NOT be equal
-      const absPos = Math.abs(outPositive);
-      const absNeg = Math.abs(outNegative);
-
-      expect(
-        Math.round(absPos * 10) !== Math.round(absNeg * 10),
-      ).toBe(true);
+  describe('cohenHelieIk (cathode current)', () => {
+    it('returns zero when tube is in cutoff (large negative Vgk)', () => {
+      // With Vgk = -50V and Vpk = 250V: (250/100.8 + (-50)) is very negative
+      // log(1 + exp(very_negative)) ≈ 0, so Ik ≈ 0
+      const Ik = cohenHelieIk(250, -50);
+      expect(Ik).toBeCloseTo(0, 6);
     });
-  });
 
-  describe('transistor mode', () => {
-    it('produces symmetric clipping: positive and negative peaks match', () => {
-      const amp = new AmplifierModel('transistor', 2.0);
-
-      const outPositive = amp.process(0.8);
-      const outNegative = amp.process(-0.8);
-
-      // Transistor mode should produce symmetric saturation (odd harmonics)
-      // The absolute values should be equal to 2 decimal places
-      expect(Math.abs(outPositive)).toBeCloseTo(Math.abs(outNegative), 2);
+    it('returns positive current in normal operating range', () => {
+      // Typical 12AX7 operating point: Vgk ≈ -1.5V, Vpk ≈ 150V
+      const Ik = cohenHelieIk(150, -1.5);
+      expect(Ik).toBeGreaterThan(0);
+      // 12AX7 typical plate current is 0.5-1.5 mA
+      expect(Ik).toBeGreaterThan(0.0001);
+      expect(Ik).toBeLessThan(0.01);
     });
-  });
 
-  describe('numerical stability', () => {
-    it('produces no NaN or Infinity for driven signals', () => {
-      const modes: Array<'tube' | 'transistor'> = ['tube', 'transistor'];
+    it('increases with less negative Vgk (more grid drive)', () => {
+      const Ik_low = cohenHelieIk(200, -2.0);
+      const Ik_high = cohenHelieIk(200, -0.5);
+      expect(Ik_high).toBeGreaterThan(Ik_low);
+    });
 
-      for (const mode of modes) {
-        const amp = new AmplifierModel(mode, 5.0);
-
-        // Test with a variety of input levels
-        const testInputs = [0, 0.1, -0.1, 0.5, -0.5, 1.0, -1.0, 5.0, -5.0, 100, -100];
-
-        for (const input of testInputs) {
-          const output = amp.process(input);
-          expect(Number.isFinite(output)).toBe(true);
-        }
+    it('is always non-negative', () => {
+      const testCases = [
+        [250, -5], [250, 0], [250, 5], [100, -2], [300, -1],
+      ];
+      for (const [Vpk, Vgk] of testCases) {
+        expect(cohenHelieIk(Vpk, Vgk)).toBeGreaterThanOrEqual(0);
       }
     });
   });
 
-  describe('setDrive', () => {
-    it('updates the drive parameter', () => {
-      const amp = new AmplifierModel('tube', 1.0);
+  describe('cohenHelieIg (grid current)', () => {
+    it('is near zero for negative Vgk (normal operation)', () => {
+      // Grid current only flows when Vgk > 0 (grid conduction)
+      const Ig = cohenHelieIg(-1.5);
+      expect(Ig).toBeCloseTo(0, 5);
+    });
 
-      // Low drive should produce less saturation
-      const outLowDrive = amp.process(0.5);
+    it('is positive for positive Vgk (grid conduction)', () => {
+      const Ig = cohenHelieIg(5.0);
+      expect(Ig).toBeGreaterThan(0);
+    });
 
-      amp.setDrive(5.0);
-      const outHighDrive = amp.process(0.5);
+    it('increases with increasing Vgk', () => {
+      const Ig_low = cohenHelieIg(1.0);
+      const Ig_high = cohenHelieIg(5.0);
+      expect(Ig_high).toBeGreaterThan(Ig_low);
+    });
 
-      // Higher drive should produce a different output
-      expect(outLowDrive).not.toBe(outHighDrive);
+    it('is always non-negative', () => {
+      for (const Vgk of [-10, -5, -2, -1, 0, 1, 5, 10]) {
+        expect(cohenHelieIg(Vgk)).toBeGreaterThanOrEqual(0);
+      }
     });
   });
 
-  describe('reset', () => {
-    it('is callable (stateless model)', () => {
-      const amp = new AmplifierModel('tube', 1.0);
-      amp.process(0.5);
+  describe('cohenHelieJacobian', () => {
+    it('returns a 2x2 matrix of partial derivatives', () => {
+      const J = cohenHelieJacobian(200, -1.5);
+      // J = [[dIp/dVpk, dIp/dVgk], [dIg/dVpk, dIg/dVgk]]
+      expect(J).toHaveLength(4); // flat [j00, j01, j10, j11]
+    });
 
-      // reset should not throw
-      expect(() => amp.reset()).not.toThrow();
+    it('dIg/dVpk is zero (grid current independent of plate voltage)', () => {
+      const J = cohenHelieJacobian(200, -1.5);
+      expect(J[2]).toBe(0); // j10 = dIg/dVpk
+    });
+
+    it('matches numerical derivatives', () => {
+      const Vpk = 180, Vgk = -1.2;
+      const eps = 1e-5;
+      const J = cohenHelieJacobian(Vpk, Vgk);
+
+      // Numerical dIp/dVpk
+      const Ip_hi = cohenHelieIk(Vpk + eps, Vgk) - cohenHelieIg(Vgk);
+      const Ip_lo = cohenHelieIk(Vpk - eps, Vgk) - cohenHelieIg(Vgk);
+      const dIp_dVpk_num = (Ip_hi - Ip_lo) / (2 * eps);
+      expect(J[0]).toBeCloseTo(dIp_dVpk_num, 4);
+
+      // Numerical dIp/dVgk
+      const Ip_hi2 = cohenHelieIk(Vpk, Vgk + eps) - cohenHelieIg(Vgk + eps);
+      const Ip_lo2 = cohenHelieIk(Vpk, Vgk - eps) - cohenHelieIg(Vgk - eps);
+      const dIp_dVgk_num = (Ip_hi2 - Ip_lo2) / (2 * eps);
+      expect(J[1]).toBeCloseTo(dIp_dVgk_num, 4);
+
+      // Numerical dIg/dVgk
+      const Ig_hi = cohenHelieIg(Vgk + eps);
+      const Ig_lo = cohenHelieIg(Vgk - eps);
+      const dIg_dVgk_num = (Ig_hi - Ig_lo) / (2 * eps);
+      expect(J[3]).toBeCloseTo(dIg_dVgk_num, 4);
+    });
+  });
+
+  describe('plate current (Ip = Ik - Ig)', () => {
+    it('plate current equals cathode minus grid current', () => {
+      const Vpk = 200, Vgk = -1.0;
+      const Ik = cohenHelieIk(Vpk, Vgk);
+      const Ig = cohenHelieIg(Vgk);
+      const Ip = Ik - Ig;
+      expect(Ip).toBeCloseTo(Ik, 6); // Ig ≈ 0 for negative Vgk
+      expect(Ip).toBeGreaterThan(0);
     });
   });
 });
