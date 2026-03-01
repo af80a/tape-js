@@ -124,6 +124,18 @@ describe('AmplifierModel tube circuit', () => {
     expect(amp).toBeDefined();
   });
 
+  it('initializes and processes with Ampex circuit params', () => {
+    const amp = new AmplifierModel('tube', 0.5, {
+      Rp: 220e3, Rg: 470e3, Rk: 1.8e3,
+      Cc_in: 47e-9, Cc_out: 220e-9, Ck: 22e-6, Vpp: 300,
+    });
+    const fs = 48000;
+    for (let i = 0; i < fs * 0.1; i++) {
+      const y = amp.process(0.5 * Math.sin(2 * Math.PI * 440 * i / fs));
+      expect(Number.isFinite(y)).toBe(true);
+    }
+  });
+
   it('defaults to Studer-like params when none provided', () => {
     const amp = new AmplifierModel('tube', 1.0);
     // Should not throw — uses default circuit params
@@ -257,17 +269,15 @@ describe('power supply sag', () => {
     const amp = new AmplifierModel('tube', 1.0);
     amp.setDrive(1.0);
     const fs = 48000;
-    const initialVpp = amp.sagVpp;
+    const initialVpp = amp.getSagVpp();
 
-    // Process 0.5s of loud sine — peak plate current envelope
-    // drives sagVpp down via the supply impedance.
+    // Process 0.5s of loud sine to drain the supply
     for (let i = 0; i < fs * 0.5; i++) {
-      const x = 1.5 * Math.sin(2 * Math.PI * 100 * i / fs);
-      amp.process(x);
+      amp.process(1.5 * Math.sin(2 * Math.PI * 100 * i / fs));
     }
 
     // Supply voltage should have sagged measurably
-    expect(amp.sagVpp).toBeLessThan(initialVpp * 0.99);
+    expect(amp.getSagVpp()).toBeLessThan(initialVpp * 0.99);
   });
 
   it('supply recovers after signal stops', () => {
@@ -279,7 +289,7 @@ describe('power supply sag', () => {
     for (let i = 0; i < fs * 0.5; i++) {
       amp.process(1.5 * Math.sin(2 * Math.PI * 100 * i / fs));
     }
-    const saggedVpp = amp.sagVpp;
+    const saggedVpp = amp.getSagVpp();
 
     // Silence for 1s (supply recovers)
     for (let i = 0; i < fs; i++) {
@@ -287,18 +297,33 @@ describe('power supply sag', () => {
     }
 
     // Supply should have recovered above sagged level, close to initial
-    const initialVpp = new AmplifierModel('tube', 1.0).sagVpp;
-    expect(amp.sagVpp).toBeGreaterThan(saggedVpp);
-    expect(amp.sagVpp).toBeGreaterThan(initialVpp * 0.995);
+    const initialVpp = new AmplifierModel('tube', 1.0).getSagVpp();
+    expect(amp.getSagVpp()).toBeGreaterThan(saggedVpp);
+    expect(amp.getSagVpp()).toBeGreaterThan(initialVpp * 0.995);
   });
 });
 
 describe('backward compatibility', () => {
-  it('transistor mode is unchanged', () => {
+  it('transistor mode is symmetric', () => {
     const amp = new AmplifierModel('transistor', 2.0);
     const outPos = amp.process(0.8);
     const outNeg = amp.process(-0.8);
     expect(Math.abs(outPos)).toBeCloseTo(Math.abs(outNeg), 2);
+  });
+
+  it('transistor mode preserves amplitude below threshold', () => {
+    const amp = new AmplifierModel('transistor', 1.0);
+    // Input below threshold (0.85) with drive=1.0 should pass through linearly
+    const out = amp.process(0.5);
+    expect(out).toBeCloseTo(0.5, 2);
+  });
+
+  it('transistor setDrive uses raw value (no tube mapping)', () => {
+    const amp = new AmplifierModel('transistor', 1.0);
+    amp.setDrive(0.5);
+    // 0.3 * 0.5 = 0.15, well below threshold → linear
+    const out = amp.process(0.3);
+    expect(out).toBeCloseTo(0.15, 2);
   });
 
   it('reset clears state and does not throw', () => {

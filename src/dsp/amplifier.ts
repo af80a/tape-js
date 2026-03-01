@@ -102,7 +102,7 @@ export class AmplifierModel {
   // Tube mode state
   private x = [0, 0, 0];         // [V_Cc_in, V_Cc_out, V_Ck]
   private i_nl_prev = [0, 0];    // [Ip, Ig] from previous sample
-  sagVpp = 0;                     // plate supply (modified by sag model)
+  private _sagVpp = 0;             // plate supply (modified by sag model)
   private sagVscreen = 0;         // screen/second filter cap voltage
   private dcPlateVoltage = 1;     // DC plate voltage for normalization
 
@@ -145,7 +145,7 @@ export class AmplifierModel {
     fs = 48000,
   ) {
     this.mode = mode;
-    this.drive = 0.5 + drive * 4.0;  // 0→0.5x, 0.5→2.5x, 1→4.5x
+    this.drive = mode === 'tube' ? 0.5 + drive * 4.0 : drive;
     this.circuitParams = circuitParams ?? DEFAULT_CIRCUIT;
     this.fs = fs;
 
@@ -159,7 +159,12 @@ export class AmplifierModel {
   }
 
   setDrive(v: number): void {
-    this.drive = 0.5 + v * 4.0;  // 0→0.5x, 0.5→2.5x, 1→4.5x
+    this.drive = this.mode === 'tube' ? 0.5 + v * 4.0 : v;
+  }
+
+  /** Current plate supply voltage (for diagnostics/testing). */
+  getSagVpp(): number {
+    return this._sagVpp;
   }
 
   process(input: number): number {
@@ -316,7 +321,7 @@ export class AmplifierModel {
     // Vpp_ss * (1 + Ro/(Rf+Rb)) = Videal - Ro*Ip
     const sagVpp_ss = (Vpp - Ro * Ip_dc) / (1 + Ro / (Rf + Rb));
     const sagVss_ss = sagVpp_ss * Rb / (Rf + Rb);
-    this.sagVpp = sagVpp_ss;
+    this._sagVpp = sagVpp_ss;
     this.sagVscreen = sagVss_ss;
 
     // Warmup: run the discrete system to its own numerical steady state.
@@ -336,7 +341,7 @@ export class AmplifierModel {
 
   private tubeProcess(u: number): number {
     const x = this.x;
-    const Vpp = this.sagVpp;
+    const Vpp = this._sagVpp;
 
     // Newton-Raphson: solve for nonlinear tube currents [Ip, Ig]
     let Ip = this.i_nl_prev[0];
@@ -418,7 +423,7 @@ export class AmplifierModel {
 
   private updateSag(Ip: number): void {
     const T = 1 / this.fs;
-    const Vpp = this.sagVpp;
+    const Vpp = this._sagVpp;
     const Vss = this.sagVscreen;
     const Videal = this.circuitParams.Vpp;
 
@@ -430,7 +435,7 @@ export class AmplifierModel {
     const dVss = ((Vpp - Vss) / AmplifierModel.SAG_R_FILTER - Vss / AmplifierModel.SAG_R_BLEEDER)
                  / AmplifierModel.SAG_C2;
 
-    this.sagVpp = Vpp + T * dVpp;
+    this._sagVpp = Vpp + T * dVpp;
     this.sagVscreen = Vss + T * dVss;
   }
 
