@@ -21,7 +21,6 @@ export class HysteresisProcessor {
   private k = 0.47875; // pinning parameter (constant)
   private c = 0.1; // reversibility parameter (derived from width)
   private alpha = 1.6e-3; // inter-domain coupling (constant)
-  private upperLim = 20.0; // output normalization
 
   // User-facing parameters (stored for cook())
   private drive = 0.5;
@@ -93,7 +92,8 @@ export class HysteresisProcessor {
     this.H_n1 = H;
     this.H_d_n1 = H_d;
 
-    return M_new / this.upperLim;
+    // Normalize by Ms so output stays in roughly [-1, 1] range
+    return M_new / this.Ms;
   }
 
   /** Reset all state to zero. */

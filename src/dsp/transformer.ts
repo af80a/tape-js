@@ -55,15 +55,13 @@ export class TransformerModel {
     // 1. HPF (LF coupling)
     let x = this.hpf.process(input);
 
-    // 2. Core saturation
-    if (Math.abs(x) < 0.001) {
-      // Linear passthrough for very small signals (avoids unnecessary nonlinearity)
-    } else {
-      const driven = x * this.satGain * 1.5;
-      const saturated = Math.tanh(driven) / 1.5 * this.satGain;
-      // Asymmetry: add even harmonics via x^2 term with sign preservation
-      const asymmetry = 0.02 * x * x * Math.sign(x);
-      x = saturated + asymmetry;
+    // 2. Core saturation — unity gain for small signals, soft clip at high levels
+    if (Math.abs(x) >= 0.001) {
+      const driven = x * this.satGain;
+      // tanh(x)/x → 1 as x→0, so this preserves unity gain at low levels
+      x = Math.tanh(driven) / this.satGain;
+      // Asymmetry: add subtle even harmonics
+      x += 0.02 * driven * driven * Math.sign(driven);
     }
 
     // 3. LPF (HF rolloff)
