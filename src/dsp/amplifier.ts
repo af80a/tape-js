@@ -103,10 +103,24 @@ export class AmplifierModel {
   private x = [0, 0, 0];         // [V_Cc_in, V_Cc_out, V_Ck]
   private i_nl_prev = [0, 0];    // [Ip, Ig] from previous sample
   sagVpp = 0;                     // plate supply (modified by sag model)
+  private sagVscreen = 0;         // screen/second filter cap voltage
   private dcPlateVoltage = 1;     // DC plate voltage for normalization
 
   // Output load resistance (next stage grid input impedance)
   private static readonly RLOAD = 1e6;
+
+  // Power supply sag parameters (tuned for audible effect — lumped impedance
+  // representing rectifier + choke + winding resistance of a tube supply)
+  private static readonly SAG_R_OUT = 5000;       // supply output impedance
+  private static readonly SAG_R_FILTER = 4700;    // inter-stage filter R
+  private static readonly SAG_C1 = 10e-6;         // first filter cap
+  private static readonly SAG_C2 = 22e-6;         // second filter cap
+  private static readonly SAG_R_BLEEDER = 220e3;  // bleeder resistor
+
+  // Peak-tracking envelope for plate current (drives sag model)
+  private sagIpEnvelope = 0;
+  private sagAttackCoeff = 0;   // ~1ms attack
+  private sagReleaseCoeff = 0;  // ~100ms release
 
   // State-space matrices (precomputed from circuit topology + trapezoidal rule)
   // v_nl = Hd*x + Kd_vin*u + Kd_vpp*Vpp + Ld*i_nl
@@ -136,6 +150,9 @@ export class AmplifierModel {
     this.fs = fs;
 
     if (mode === 'tube') {
+      const T = 1 / fs;
+      this.sagAttackCoeff = 1 - Math.exp(-T / 0.001);
+      this.sagReleaseCoeff = 1 - Math.exp(-T / 0.100);
       this.initStateSpace();
       this.solveDCOperatingPoint();
     }
@@ -287,13 +304,28 @@ export class AmplifierModel {
 
     this.i_nl_prev[0] = Ip_dc;
     this.i_nl_prev[1] = Ig_dc;
-    this.sagVpp = Vpp;
+    this.sagIpEnvelope = Ip_dc;
+
+    // Compute DC steady-state sag voltages:
+    //   dVss/dt=0 → (Vpp-Vss)/R_FILTER = Vss/R_BLEEDER → Vss = Vpp*R_BLEEDER/(R_FILTER+R_BLEEDER)
+    //   dVpp/dt=0 → (Videal-Vpp)/R_OUT = Ip + Vss/R_BLEEDER
+    const Rf = AmplifierModel.SAG_R_FILTER;
+    const Rb = AmplifierModel.SAG_R_BLEEDER;
+    const Ro = AmplifierModel.SAG_R_OUT;
+    // Solve: Vpp_ss = Videal - Ro * (Ip + Vpp_ss/(Rf+Rb))
+    // Vpp_ss * (1 + Ro/(Rf+Rb)) = Videal - Ro*Ip
+    const sagVpp_ss = (Vpp - Ro * Ip_dc) / (1 + Ro / (Rf + Rb));
+    const sagVss_ss = sagVpp_ss * Rb / (Rf + Rb);
+    this.sagVpp = sagVpp_ss;
+    this.sagVscreen = sagVss_ss;
 
     // Warmup: run the discrete system to its own numerical steady state.
     // The continuous DC solution has tiny rounding mismatch with the discrete
     // trapezoidal system — a few hundred samples of silence eliminate the
     // startup transient.
-    for (let i = 0; i < 2000; i++) {
+    // Sag τ = R_OUT * C1 = 50ms. Need ~5τ (12000 samples at 48kHz)
+    // to settle both the sag model and discrete trapezoidal state.
+    for (let i = 0; i < 12000; i++) {
       this.tubeProcess(0);
     }
   }
@@ -365,8 +397,41 @@ export class AmplifierModel {
     this.x[1] = x1;
     this.x[2] = x2;
 
+    // Peak-track plate current for sag model (fast attack, slow release).
+    // Cathode-biased preamp tubes don't increase average Ip much under
+    // overdrive (bias shift effect), but peak Ip increases significantly.
+    // The envelope captures this peak behavior for audible sag.
+    if (Ip > this.sagIpEnvelope) {
+      this.sagIpEnvelope += this.sagAttackCoeff * (Ip - this.sagIpEnvelope);
+    } else {
+      this.sagIpEnvelope += this.sagReleaseCoeff * (Ip - this.sagIpEnvelope);
+    }
+    this.updateSag(this.sagIpEnvelope);
+
     // Normalize output: raw y is in volts, scale to ~[-1,1]
     return y / this.dcPlateVoltage;
+  }
+
+  // -------------------------------------------------------------------------
+  // Power supply sag model (forward-Euler)
+  // -------------------------------------------------------------------------
+
+  private updateSag(Ip: number): void {
+    const T = 1 / this.fs;
+    const Vpp = this.sagVpp;
+    const Vss = this.sagVscreen;
+    const Videal = this.circuitParams.Vpp;
+
+    // Rectifier current: (Videal - Vpp) / R_OUT models the supply recharging
+    // the filter cap. When Vpp < Videal (sag), current flows in to restore.
+    const Irect = (Videal - Vpp) / AmplifierModel.SAG_R_OUT;
+    const dVpp = (Irect - Ip - (Vpp - Vss) / AmplifierModel.SAG_R_FILTER)
+                 / AmplifierModel.SAG_C1;
+    const dVss = ((Vpp - Vss) / AmplifierModel.SAG_R_FILTER - Vss / AmplifierModel.SAG_R_BLEEDER)
+                 / AmplifierModel.SAG_C2;
+
+    this.sagVpp = Vpp + T * dVpp;
+    this.sagVscreen = Vss + T * dVss;
   }
 
   // -------------------------------------------------------------------------

@@ -195,3 +195,44 @@ describe('Newton-Raphson solver', () => {
     expect(maxOut).toBeLessThan(10);
   });
 });
+
+describe('power supply sag', () => {
+  it('Vpp sags under sustained heavy signal', () => {
+    const amp = new AmplifierModel('tube', 1.0);
+    amp.setDrive(4.5);
+    const fs = 48000;
+    const initialVpp = amp.sagVpp;
+
+    // Process 0.5s of loud sine — peak plate current envelope
+    // drives sagVpp down via the supply impedance.
+    for (let i = 0; i < fs * 0.5; i++) {
+      const x = 1.5 * Math.sin(2 * Math.PI * 100 * i / fs);
+      amp.process(x);
+    }
+
+    // Supply voltage should have sagged measurably
+    expect(amp.sagVpp).toBeLessThan(initialVpp * 0.99);
+  });
+
+  it('supply recovers after signal stops', () => {
+    const amp = new AmplifierModel('tube', 1.0);
+    amp.setDrive(4.5);
+    const fs = 48000;
+
+    // Heavy signal for 0.5s
+    for (let i = 0; i < fs * 0.5; i++) {
+      amp.process(1.5 * Math.sin(2 * Math.PI * 100 * i / fs));
+    }
+    const saggedVpp = amp.sagVpp;
+
+    // Silence for 1s (supply recovers)
+    for (let i = 0; i < fs; i++) {
+      amp.process(0);
+    }
+
+    // Supply should have recovered above sagged level, close to initial
+    const initialVpp = new AmplifierModel('tube', 1.0).sagVpp;
+    expect(amp.sagVpp).toBeGreaterThan(saggedVpp);
+    expect(amp.sagVpp).toBeGreaterThan(initialVpp * 0.995);
+  });
+});
