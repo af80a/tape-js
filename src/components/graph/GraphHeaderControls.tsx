@@ -11,6 +11,8 @@ export function GraphHeaderControls() {
   const setGlobalBypass = useAudioEngine((s) => s.setGlobalBypass);
   const setTapeSpeed = useAudioEngine((s) => s.setTapeSpeed);
   const setOversample = useAudioEngine((s) => s.setOversample);
+  const scopeOpen = useAudioEngine((s) => s.scopeOpen);
+  const toggleScope = useAudioEngine((s) => s.toggleScope);
   const preset = useStageParams((s) => s.currentPreset);
   const loadPreset = useStageParams((s) => s.loadPreset);
 
@@ -67,6 +69,12 @@ export function GraphHeaderControls() {
         className="bypass-btn graph-header-controls__bypass"
         active={bypassed}
         onToggle={handleBypass}
+      />
+      <ToggleButton
+        label="SCOPE"
+        className="bypass-btn graph-header-controls__scope"
+        active={scopeOpen}
+        onToggle={toggleScope}
       />
     </div>
   );

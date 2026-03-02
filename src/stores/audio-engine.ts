@@ -44,8 +44,10 @@ interface AudioEngineState {
   stageMeters: Record<string, StageMeterLevels>;
   scopeBuffers: Record<ScopeStageId, ScopeSnapshot[]>;
   scopeBufferIndex: number;
+  scopeOpen: boolean;
 
   // Actions
+  toggleScope: () => void;
   ensureAudioContext: () => Promise<void>;
   loadFile: (file: File) => Promise<void>;
   play: () => void;
@@ -81,6 +83,9 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
     SCOPE_STAGE_IDS.map(id => [id, Array.from({ length: SCOPE_BUFFER_SIZE }, () => ({ vuDb: -60, gainDelta: 0, saturation: 0 }))])
   ) as Record<ScopeStageId, ScopeSnapshot[]>,
   scopeBufferIndex: 0,
+  scopeOpen: false,
+
+  toggleScope: () => set((s) => ({ scopeOpen: !s.scopeOpen })),
 
   ensureAudioContext: async () => {
     if (get().audioCtx) return;

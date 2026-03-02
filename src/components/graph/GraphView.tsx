@@ -10,6 +10,8 @@ import {
 import '@xyflow/react/dist/style.css';
 import { StageNode } from './nodes/StageNode';
 import { computeGraphLayout } from './GraphLayout';
+import { ScopePanel } from './ScopePanel';
+import { useAudioEngine } from '../../stores/audio-engine';
 
 const nodeTypes: NodeTypes = {
   stage: StageNode,
@@ -21,6 +23,7 @@ const { initialNodes, initialEdges } = computeGraphLayout();
 export function GraphView() {
   const [nodes, , onNodesChange] = useNodesState(initialNodes);
   const [edges] = useEdgesState(initialEdges);
+  const scopeOpen = useAudioEngine((s) => s.scopeOpen);
 
   const handleInit = useCallback((instance: ReactFlowInstance) => {
     requestAnimationFrame(() => {
@@ -45,6 +48,7 @@ export function GraphView() {
           <Background color="#171c22" gap={22} />
         </ReactFlow>
       </div>
+      {scopeOpen && <ScopePanel />}
     </div>
   );
 }

@@ -193,6 +193,64 @@
   border: 1px solid #1e232d;
 }
 
+/* ==========================================================================
+   Scope Panel — time-series sparklines for nonlinear stages
+   ========================================================================== */
+
+.scope-panel {
+  flex: 0 0 auto;
+  max-height: 200px;
+  padding: 8px 12px;
+  border-top: 1px solid #242a34;
+  background: #0a0d13;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+}
+
+.scope-panel__header {
+  display: flex;
+  gap: 8px;
+  padding-left: 110px;
+  margin-bottom: 4px;
+}
+
+.scope-panel__col-label {
+  width: 200px;
+  font-size: 9px;
+  font-weight: 600;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  text-align: center;
+}
+
+.scope-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+}
+
+.scope-row__label {
+  flex: 0 0 100px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #78a7a2;
+  text-align: right;
+  padding-right: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sparkline {
+  border-radius: 3px;
+  background: #0e1118;
+  border: 1px solid #1e232d;
+}
+
 @media (max-width: 960px) {
   .graph-view {
     gap: 8px;
