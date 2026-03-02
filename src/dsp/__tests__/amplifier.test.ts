@@ -345,6 +345,38 @@ describe('sag time constant matches design doc', () => {
   });
 });
 
+describe('getSaturationDepth', () => {
+  it('returns 0 for tube mode with no signal', () => {
+    const amp = new AmplifierModel('tube', 0.5, undefined, 48000);
+    expect(amp.getSaturationDepth()).toBeCloseTo(0, 1);
+  });
+
+  it('increases for tube mode with hotter signal', () => {
+    const amp1 = new AmplifierModel('tube', 0.3, undefined, 48000);
+    const amp2 = new AmplifierModel('tube', 0.9, undefined, 48000);
+
+    for (let i = 0; i < 2000; i++) {
+      const sample = 0.5 * Math.sin(2 * Math.PI * 440 * i / 48000);
+      amp1.process(sample);
+      amp2.process(sample);
+    }
+
+    expect(amp2.getSaturationDepth()).toBeGreaterThan(amp1.getSaturationDepth());
+  });
+
+  it('returns 0 for transistor mode below threshold', () => {
+    const amp = new AmplifierModel('transistor', 0.1, undefined, 48000);
+    for (let i = 0; i < 50; i++) amp.process(0.1 * Math.sin(i * 0.1));
+    expect(amp.getSaturationDepth()).toBe(0);
+  });
+
+  it('returns > 0 for transistor mode above threshold', () => {
+    const amp = new AmplifierModel('transistor', 1.0, undefined, 48000);
+    for (let i = 0; i < 50; i++) amp.process(0.9 * Math.sin(i * 0.1));
+    expect(amp.getSaturationDepth()).toBeGreaterThan(0);
+  });
+});
+
 describe('backward compatibility', () => {
   it('transistor mode is symmetric', () => {
     const amp = new AmplifierModel('transistor', 2.0);

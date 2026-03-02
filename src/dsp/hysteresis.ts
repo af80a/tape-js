@@ -171,6 +171,11 @@ export class HysteresisProcessor {
     this.H_d_n1 = 0;
   }
 
+  /** Returns 0-1 indicating how close magnetization is to saturation. */
+  getSaturationDepth(): number {
+    return Math.min(1, Math.abs(this.M_n1) / this.Ms);
+  }
+
   /**
    * Compute the time derivative of magnetization dM/dt.
    *

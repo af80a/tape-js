@@ -502,6 +502,27 @@ describe('HysteresisProcessor', () => {
     });
   });
 
+  describe('getSaturationDepth', () => {
+    it('returns 0 when no signal has been processed', () => {
+      const proc = new HysteresisProcessor(48000);
+      expect(proc.getSaturationDepth()).toBe(0);
+    });
+
+    it('increases with louder input signals', () => {
+      const proc = new HysteresisProcessor(48000);
+      for (let i = 0; i < 100; i++) proc.process(0.3 * Math.sin(i * 0.1));
+      const depthLow = proc.getSaturationDepth();
+
+      const proc2 = new HysteresisProcessor(48000);
+      for (let i = 0; i < 100; i++) proc2.process(0.9 * Math.sin(i * 0.1));
+      const depthHigh = proc2.getSaturationDepth();
+
+      expect(depthHigh).toBeGreaterThan(depthLow);
+      expect(depthLow).toBeGreaterThanOrEqual(0);
+      expect(depthHigh).toBeLessThanOrEqual(1);
+    });
+  });
+
   it('reset clears state: process(0) returns 0 after reset', () => {
     const hp = new HysteresisProcessor(sampleRate);
     hp.setDrive(0.5);

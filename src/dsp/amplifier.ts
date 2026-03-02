@@ -103,6 +103,7 @@ export class AmplifierModel {
   // Tube mode state
   private x = [0, 0, 0];         // [V_Cc_in, V_Cc_out, V_Ck]
   private i_nl_prev = [0, 0];    // [Ip, Ig] from previous sample
+  private _saturationDepth = 0;
   private _sagVpp = 0;             // plate supply (modified by sag model)
   private sagVscreen = 0;         // screen/second filter cap voltage
   private dcPlateVoltage = 1;     // DC plate voltage for normalization
@@ -165,6 +166,20 @@ export class AmplifierModel {
     this.drive = this.mode === 'tube' ? 0.5 + v * 4.0 : v;
   }
 
+  /**
+   * Update plate supply voltage in-place without rebuilding the model.
+   * The sag integrator drifts towards the new Vpp over ~35ms (physical settling),
+   * and the output normalization is updated proportionally.
+   */
+  setVpp(vpp: number): void {
+    if (this.mode !== 'tube') return;
+    const oldVpp = this.circuitParams.Vpp;
+    this.circuitParams = { ...this.circuitParams, Vpp: vpp };
+    // Scale normalization proportionally — correct during gradual knob changes
+    this.dcPlateVoltage = Math.max(1, this.dcPlateVoltage * vpp / Math.max(1, oldVpp));
+    // _sagVpp drifts to new target via updateSag() — no state reset needed
+  }
+
   /** Raw 0-1 drive value (for preserving drive when recreating for Vpp changes). */
   getDrive(): number {
     return this.driveRaw;
@@ -187,6 +202,11 @@ export class AmplifierModel {
     if (this.mode === 'tube') {
       this.solveDCOperatingPoint();
     }
+  }
+
+  /** Returns 0-1 saturation depth from the last processed sample. */
+  getSaturationDepth(): number {
+    return this._saturationDepth;
   }
 
   // -------------------------------------------------------------------------
@@ -397,6 +417,10 @@ export class AmplifierModel {
     this.i_nl_prev[0] = Ip;
     this.i_nl_prev[1] = Ig;
 
+    // Saturation depth: plate voltage headroom consumed.
+    const Vp = this._sagVpp - Ip * this.circuitParams.Rp;
+    this._saturationDepth = Math.max(0, Math.min(1, 1 - Vp / this.dcPlateVoltage));
+
     // Output: y = Dd*x + Ed_vpp*Vpp + Fd*i_nl
     const y = this.Dd[1] * x[1]
             + this.Ed_vpp * Vpp
@@ -454,10 +478,14 @@ export class AmplifierModel {
   private transistorSaturate(x: number): number {
     const threshold = 0.85;
     const absX = Math.abs(x);
-    if (absX < threshold) return x;
+    if (absX < threshold) {
+      this._saturationDepth = 0;
+      return x;
+    }
     const excess = absX - threshold;
     const compressed =
       threshold + (1 - threshold) * Math.tanh(excess / (1 - threshold));
+    this._saturationDepth = Math.max(0, Math.min(1, (absX - threshold) / (1 - threshold)));
     return Math.sign(x) * compressed;
   }
 }

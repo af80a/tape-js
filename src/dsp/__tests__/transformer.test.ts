@@ -269,6 +269,28 @@ describe('TransformerModel', () => {
     });
   });
 
+  describe('getSaturationDepth', () => {
+    it('returns 0 when no signal has been processed', () => {
+      const xfmr = new TransformerModel(48000);
+      expect(xfmr.getSaturationDepth()).toBe(0);
+    });
+
+    it('returns higher value when driven harder', () => {
+      const xfmr1 = new TransformerModel(48000, { satAmount: 1.0 });
+      const xfmr2 = new TransformerModel(48000, { satAmount: 2.0 });
+
+      for (let i = 0; i < 500; i++) {
+        const sample = 0.5 * Math.sin(2 * Math.PI * 60 * i / 48000);
+        xfmr1.process(sample);
+        xfmr2.process(sample);
+      }
+
+      expect(xfmr2.getSaturationDepth()).toBeGreaterThan(xfmr1.getSaturationDepth());
+      expect(xfmr1.getSaturationDepth()).toBeGreaterThanOrEqual(0);
+      expect(xfmr2.getSaturationDepth()).toBeLessThanOrEqual(1);
+    });
+  });
+
   it('satAmount=0 bypasses saturation (linear passthrough)', () => {
     const fs = sampleRate;
     const tf = new TransformerModel(fs, { satAmount: 0, lfCutoff: 5 });

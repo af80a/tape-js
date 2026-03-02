@@ -229,4 +229,11 @@ export class TransformerModel {
     this.prevBout = 0;
     this.eddyZ1 = 0;
   }
+
+  /** Returns 0-1 indicating how deep the core is into saturation. */
+  getSaturationDepth(): number {
+    if (this.satGain <= 0.001) return 0;
+    const phi = this.flux * this.satGain * this.coreStiffness;
+    return Math.abs(Math.tanh(phi));
+  }
 }
