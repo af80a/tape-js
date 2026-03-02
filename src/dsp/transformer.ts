@@ -244,6 +244,6 @@ export class TransformerModel {
   getSaturationDepth(): number {
     if (this.satGain <= 0.001) return 0;
     const phi = this.flux * this.satGain * this.coreStiffness;
-    return Math.abs(Math.tanh(phi));
+    return Math.abs(Math.tanh(phi + this.asymmetry) - Math.tanh(this.asymmetry));
   }
 }
