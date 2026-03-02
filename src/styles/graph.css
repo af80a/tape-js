@@ -214,6 +214,7 @@
   gap: 8px;
   padding-left: 110px;
   margin-bottom: 4px;
+  align-items: flex-start;
 }
 
 .scope-panel__col-label {
@@ -224,6 +225,49 @@
   text-transform: uppercase;
   letter-spacing: 0.5px;
   text-align: center;
+}
+
+.scope-panel__col-header {
+  width: 200px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.scope-panel__scale-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.scope-panel__scale-label {
+  font-size: 8px;
+  color: #555d6b;
+  min-width: 40px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.scope-panel__scale-btn {
+  background: none;
+  border: none;
+  color: #555d6b;
+  font-size: 11px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: color 0.1s;
+}
+
+.scope-panel__scale-btn:hover:not(:disabled) {
+  color: #9ca3af;
+}
+
+.scope-panel__scale-btn:disabled {
+  opacity: 0.2;
+  cursor: default;
 }
 
 .scope-row {
