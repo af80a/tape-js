@@ -33,10 +33,20 @@ export function cohenHelieIk(Vpk: number, Vgk: number): number {
   return CH_Gk * Math.pow(softplus(arg) / CH_Ck, CH_Ek);
 }
 
-/** Cohen-Helie grid current Ig(Vgk). */
-export function cohenHelieIg(Vgk: number): number {
-  const arg = CH_Cg * Vgk;
-  return CH_Gg * Math.pow(softplus(arg) / CH_Cg, CH_Eg);
+/**
+ * Grid current Ig(Vgk).
+ * Upgraded from Cohen-Helie to a modified Child-Langmuir exponential diode model.
+ * This physically accurate vacuum-diode equation allows the grid to draw
+ * significantly more current when driven positive, accurately charging the
+ * input coupling capacitor to create authentic, aggressive "blocking distortion."
+ */
+export function gridCurrentIg(Vgk: number): number {
+  if (Vgk <= 0) {
+    // Soft leakage current for numerical stability in Newton solver
+    return 1e-9 * Math.exp(Vgk * 10);
+  }
+  // Child-Langmuir 3/2 power law for positive grid voltage
+  return 1e-9 + 1.5e-3 * Math.pow(Vgk, 1.5);
 }
 
 /**
@@ -53,12 +63,13 @@ export function cohenHelieJacobian(Vpk: number, Vgk: number): number[] {
   const dIk_dVpk = dIk_dargK * CH_Ck / CH_mu;
   const dIk_dVgk = dIk_dargK * CH_Ck;
 
-  // dIg/dVgk
-  const argG = CH_Cg * Vgk;
-  const spG = softplus(argG);
-  const sigG = 1 / (1 + Math.exp(-argG));
-  const baseG = spG / CH_Cg;
-  const dIg_dVgk = CH_Gg * CH_Eg * Math.pow(baseG, CH_Eg - 1) * sigG;
+  // dIg/dVgk (Derivative of Child-Langmuir grid model)
+  let dIg_dVgk = 0;
+  if (Vgk <= 0) {
+    dIg_dVgk = 10e-9 * Math.exp(Vgk * 10);
+  } else {
+    dIg_dVgk = 1.5 * 1.5e-3 * Math.sqrt(Vgk);
+  }
 
   // Ip = Ik - Ig, so dIp/dVpk = dIk/dVpk, dIp/dVgk = dIk/dVgk - dIg/dVgk
   return [
@@ -107,6 +118,13 @@ export class AmplifierModel {
   private _sagVpp = 0;             // plate supply (modified by sag model)
   private sagVscreen = 0;         // screen/second filter cap voltage
   private dcPlateVoltage = 1;     // DC plate voltage for normalization
+  
+  // Dynamic Miller Capacitance LPF state
+  private millerZ1 = 0;
+  private static readonly C_ga = 1.7e-12; // 12AX7 grid-to-anode capacitance (1.7pF)
+  private static readonly C_gk = 1.6e-12; // 12AX7 grid-to-cathode capacitance (1.6pF)
+  private static readonly R_source = 68e3; // Typical guitar/pedal source impedance (68k)
+
 
   // Output load resistance (next stage grid input impedance)
   private static readonly RLOAD = 1e6;
@@ -303,7 +321,7 @@ export class AmplifierModel {
 
     for (let outer = 0; outer < 50; outer++) {
       const Vgk = -Vk;
-      const Ig = cohenHelieIg(Vgk);
+      const Ig = gridCurrentIg(Vgk);
 
       // Inner 1D Newton: h(Ik) = Ik - cohenHelieIk(Vpp-(Ik-Ig)*Rp-Vk, Vgk)
       let Ik = 0.001;
@@ -324,7 +342,7 @@ export class AmplifierModel {
       Vk = Vk_new;
     }
 
-    const Ig_dc = cohenHelieIg(-Vk);
+    const Ig_dc = gridCurrentIg(-Vk);
     const Ik_dc = Vk / Rk;
     const Ip_dc = Ik_dc - Ig_dc;
     const Vp_dc = Vpp - Ip_dc * Rp;
@@ -371,6 +389,31 @@ export class AmplifierModel {
     const x = this.x;
     const Vpp = this._sagVpp;
 
+    // --- Dynamic Miller Capacitance ---
+    // The effective input capacitance of a triode is C_in = C_gk + C_ga * (1 + A)
+    // where A is the voltage gain. Under hard clipping, A drops to 0, so C_in drops,
+    // causing the frequency response to dynamically open up.
+    // Gain A ≈ dIp/dVgk * Rp
+    
+    // Use the Jacobian from the previous sample to estimate instantaneous gain
+    const J_prev = cohenHelieJacobian(
+      this.Hd[1] * x[1] + this.Hd[2] * x[2] + this.Kd_vpp[0] * Vpp + this.Ld[0] * this.i_nl_prev[0] + this.Ld[1] * this.i_nl_prev[1],
+      this.Hd[3] * x[0] + this.Hd[5] * x[2] + this.Kd_vin[1] * u + this.Ld[2] * this.i_nl_prev[0] + this.Ld[3] * this.i_nl_prev[1]
+    );
+    const A = Math.max(0, J_prev[1] * this.circuitParams.Rp); 
+    const C_in = AmplifierModel.C_gk + AmplifierModel.C_ga * (1 + A);
+    
+    // First-order LPF corner frequency: fc = 1 / (2 * pi * R_source * C_in)
+    // Bilinear transform coefficient:
+    const cutoff = 1 / (2 * Math.PI * AmplifierModel.R_source * C_in);
+    const wc = 2 * Math.PI * cutoff;
+    const alpha = (wc * (1 / this.fs)) / (2 + wc * (1 / this.fs));
+    
+    // Apply dynamic LPF to input signal u
+    const u_filtered = this.millerZ1 + alpha * (u - this.millerZ1);
+    this.millerZ1 = u_filtered + alpha * (u - this.millerZ1);
+    const u_miller = u_filtered;
+
     // Newton-Raphson: solve for nonlinear tube currents [Ip, Ig]
     let Ip = this.i_nl_prev[0];
     let Ig = this.i_nl_prev[1];
@@ -381,12 +424,12 @@ export class AmplifierModel {
                 + this.Kd_vpp[0] * Vpp
                 + this.Ld[0] * Ip + this.Ld[1] * Ig;
       const Vgk = this.Hd[3] * x[0] + this.Hd[5] * x[2]
-                + this.Kd_vin[1] * u
+                + this.Kd_vin[1] * u_miller
                 + this.Ld[2] * Ip + this.Ld[3] * Ig;
 
       // Evaluate tube model at current port voltages
       const Ik_eval = cohenHelieIk(Vpk, Vgk);
-      const Ig_eval = cohenHelieIg(Vgk);
+      const Ig_eval = gridCurrentIg(Vgk);
       const Ip_eval = Ik_eval - Ig_eval;
 
       // Residual: difference between assumed and evaluated currents
@@ -427,7 +470,7 @@ export class AmplifierModel {
             + this.Fd[0] * Ip;
 
     // State update: x_next = Ad*x + Bd_vin*u + Bd_vpp*Vpp + Cd*i_nl
-    const x0 = this.Ad[0] * x[0] + this.Bd_vin[0] * u + this.Cd[1] * Ig;
+    const x0 = this.Ad[0] * x[0] + this.Bd_vin[0] * u_miller + this.Cd[1] * Ig;
     const x1 = this.Ad[1] * x[1] + this.Bd_vpp[1] * Vpp + this.Cd[2] * Ip;
     const x2 = this.Ad[2] * x[2] + this.Cd[4] * Ip + this.Cd[5] * Ig;
     this.x[0] = x0;

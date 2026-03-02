@@ -1,31 +1,42 @@
 /**
- * Oversampler with FIR anti-aliasing filters.
+ * Oversampler with Polyphase FIR anti-aliasing filters.
  *
  * Uses a windowed-sinc (Blackman window) lowpass FIR to prevent aliasing
- * when nonlinear processing (e.g. hysteresis) is applied at higher sample
- * rates.
+ * when nonlinear processing is applied at higher sample rates.
+ * 
+ * Implemented using a highly optimized polyphase structure with circular buffers
+ * to eliminate unnecessary zero-multiplications and array shifting.
  */
 
 export class Oversampler {
   /** Oversampling factor (1 = bypass, 2 or 4). */
   readonly factor: number;
 
-  /** FIR filter kernel for upsample (DC gain = factor). */
-  private readonly upsampleKernel: Float64Array;
+  /** Number of taps per phase in the polyphase filters. */
+  private readonly tapsPerPhase: number;
 
-  /** FIR filter kernel for downsample (DC gain = 1). */
+  /** 
+   * Polyphase kernels for upsampling.
+   * [phase][tap]
+   */
+  private readonly upsamplePhases: Float64Array[];
+
+  /**
+   * Standard FIR kernel for downsampling.
+   * (Downsampling uses a strided standard FIR over the high-rate input).
+   */
   private readonly downsampleKernel: Float64Array;
 
-  /** Delay-line state for the upsample FIR. */
+  /** Circular buffer state for upsampling (runs at base rate). */
   private upsampleState: Float64Array;
+  private upsampleStateIdx: number = 0;
 
-  /** Delay-line state for the downsample FIR. */
+  /** Circular buffer state for downsampling (runs at oversampled rate). */
   private downsampleState: Float64Array;
+  private downsampleStateIdx: number = 0;
 
   /** Pre-allocated scratch buffers for zero-allocation processing. */
-  private upsampleStuffed: Float32Array;
   private upsampleOutput: Float32Array;
-  private downsampleFiltered: Float32Array;
   private downsampleOutput: Float32Array;
 
   /**
@@ -37,13 +48,12 @@ export class Oversampler {
 
     if (factor <= 1) {
       // Bypass — no filter needed.
-      this.upsampleKernel = new Float64Array(0);
+      this.tapsPerPhase = 0;
+      this.upsamplePhases = [];
       this.downsampleKernel = new Float64Array(0);
       this.upsampleState = new Float64Array(0);
       this.downsampleState = new Float64Array(0);
-      this.upsampleStuffed = new Float32Array(0);
       this.upsampleOutput = new Float32Array(0);
-      this.downsampleFiltered = new Float32Array(0);
       this.downsampleOutput = new Float32Array(0);
       return;
     }
@@ -82,12 +92,10 @@ export class Oversampler {
     }
 
     // Upsample kernel: normalize DC gain to `factor`.
-    // Upsampling inserts (factor-1) zeros between each sample, reducing the
-    // level by 1/factor.  Scaling the filter by `factor` compensates for this.
     const upsampleScale = factor / dcGain;
-    this.upsampleKernel = new Float64Array(N);
+    const upsampleKernel = new Float64Array(N);
     for (let i = 0; i < N; i++) {
-      this.upsampleKernel[i] = baseKernel[i] * upsampleScale;
+      upsampleKernel[i] = baseKernel[i] * upsampleScale;
     }
 
     // Downsample kernel: normalize DC gain to 1 (anti-alias only).
@@ -97,72 +105,101 @@ export class Oversampler {
       this.downsampleKernel[i] = baseKernel[i] * downsampleScale;
     }
 
-    this.upsampleState = new Float64Array(N);
-    this.downsampleState = new Float64Array(N);
+    // ---- Decompose Upsample Kernel into Polyphase Components ----
+    this.tapsPerPhase = Math.ceil(N / factor);
+    
+    // Pad kernel to a multiple of factor to make phase arrays equal length
+    const paddedUpsampleKernel = new Float64Array(factor * this.tapsPerPhase);
+    paddedUpsampleKernel.set(upsampleKernel);
 
-    // Pre-allocate scratch buffers for zero-allocation processing
-    this.upsampleStuffed = new Float32Array(maxInputLength * factor);
+    this.upsamplePhases = [];
+    for (let p = 0; p < factor; p++) {
+      const phase = new Float64Array(this.tapsPerPhase);
+      for (let t = 0; t < this.tapsPerPhase; t++) {
+        phase[t] = paddedUpsampleKernel[t * factor + p];
+      }
+      this.upsamplePhases.push(phase);
+    }
+
+    // States are now circular buffers
+    this.upsampleState = new Float64Array(this.tapsPerPhase);
+    this.downsampleState = new Float64Array(N);
+    
+    this.upsampleStateIdx = 0;
+    this.downsampleStateIdx = 0;
+
+    // Pre-allocate scratch buffers
     this.upsampleOutput = new Float32Array(maxInputLength * factor);
-    this.downsampleFiltered = new Float32Array(maxInputLength * factor);
     this.downsampleOutput = new Float32Array(maxInputLength);
   }
 
   /**
-   * Upsample the input buffer by the oversampling factor.
-   *
-   * Zero-stuffs (factor-1) zeros between each input sample, then applies
-   * the FIR lowpass filter.
+   * Upsample the input buffer by the oversampling factor using a polyphase FIR.
    *
    * @returns Buffer of length `input.length * factor`.
    */
   upsample(input: Float32Array): Float32Array {
-    if (this.factor <= 1) {
-      return input;
-    }
+    if (this.factor <= 1) return input;
 
     const factor = this.factor;
-    const len = input.length * factor;
-    const stuffed = this.upsampleStuffed;
     const output = this.upsampleOutput;
+    const state = this.upsampleState;
+    const phases = this.upsamplePhases;
+    const taps = this.tapsPerPhase;
+    let stateIdx = this.upsampleStateIdx;
 
-    // Zero-stuff: place each input sample at every `factor`th position.
-    stuffed.fill(0, 0, len);
     for (let i = 0; i < input.length; i++) {
-      stuffed[i * factor] = input[i];
+      // Insert new sample into circular buffer (moving backward)
+      stateIdx = (stateIdx - 1 + taps) % taps;
+      state[stateIdx] = input[i];
+
+      // Compute each phase output
+      for (let p = 0; p < factor; p++) {
+        let sum = 0;
+        const phase = phases[p];
+        for (let t = 0; t < taps; t++) {
+          sum += state[(stateIdx + t) % taps] * phase[t];
+        }
+        output[i * factor + p] = sum;
+      }
     }
 
-    // Apply FIR lowpass to the zero-stuffed signal.
-    this.applyFir(stuffed, output, this.upsampleState, this.upsampleKernel, len);
-
+    this.upsampleStateIdx = stateIdx;
     return output;
   }
 
   /**
    * Downsample the input buffer by the oversampling factor.
    *
-   * Applies the FIR lowpass anti-alias filter, then decimates (keeps every
-   * `factor`th sample).
-   *
    * @returns Buffer of length `floor(input.length / factor)`.
    */
   downsample(input: Float32Array): Float32Array {
-    if (this.factor <= 1) {
-      return input;
-    }
+    if (this.factor <= 1) return input;
 
     const factor = this.factor;
-
-    // Apply FIR lowpass (anti-alias) before decimation.
-    const filtered = this.downsampleFiltered;
-    this.applyFir(input, filtered, this.downsampleState, this.downsampleKernel, input.length);
-
-    // Decimate: take every `factor`th sample.
     const outLen = Math.floor(input.length / factor);
     const output = this.downsampleOutput;
+    const kernel = this.downsampleKernel;
+    const N = kernel.length;
+    const state = this.downsampleState;
+    let stateIdx = this.downsampleStateIdx;
+
     for (let i = 0; i < outLen; i++) {
-      output[i] = filtered[i * factor];
+      // Insert 'factor' new high-rate samples into the circular buffer
+      for (let f = 0; f < factor; f++) {
+        stateIdx = (stateIdx - 1 + N) % N;
+        state[stateIdx] = input[i * factor + f];
+      }
+
+      // Compute single FIR dot product for the kept sample
+      let sum = 0;
+      for (let j = 0; j < N; j++) {
+        sum += state[(stateIdx + j) % N] * kernel[j];
+      }
+      output[i] = sum;
     }
 
+    this.downsampleStateIdx = stateIdx;
     return output;
   }
 
@@ -170,43 +207,7 @@ export class Oversampler {
   reset(): void {
     this.upsampleState.fill(0);
     this.downsampleState.fill(0);
-  }
-
-  // ------------------------------------------------------------------
-  // Private helpers
-  // ------------------------------------------------------------------
-
-  /**
-   * Apply the FIR filter via direct convolution with a delay line.
-   *
-   * For each input sample:
-   *   1. Shift the delay line right by one position.
-   *   2. Insert the new sample at the beginning.
-   *   3. Compute the dot product of the delay line and the kernel.
-   */
-  private applyFir(
-    input: Float32Array,
-    output: Float32Array,
-    state: Float64Array,
-    kernel: Float64Array,
-    length?: number,
-  ): void {
-    const N = kernel.length;
-    const len = length ?? input.length;
-
-    for (let i = 0; i < len; i++) {
-      // Shift delay line right
-      for (let j = N - 1; j > 0; j--) {
-        state[j] = state[j - 1];
-      }
-      state[0] = input[i];
-
-      // Dot product with kernel
-      let sum = 0;
-      for (let j = 0; j < N; j++) {
-        sum += state[j] * kernel[j];
-      }
-      output[i] = sum;
-    }
+    this.upsampleStateIdx = 0;
+    this.downsampleStateIdx = 0;
   }
 }

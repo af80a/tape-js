@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { cohenHelieIk, cohenHelieIg, cohenHelieJacobian, AmplifierModel } from '../amplifier';
+import { cohenHelieIk, gridCurrentIg, cohenHelieJacobian, AmplifierModel } from '../amplifier';
 import type { TubeCircuitParams } from '../amplifier';
 
 describe('Cohen-Helie 12AX7 tube model', () => {
@@ -39,27 +39,27 @@ describe('Cohen-Helie 12AX7 tube model', () => {
     });
   });
 
-  describe('cohenHelieIg (grid current)', () => {
+  describe('gridCurrentIg (grid current)', () => {
     it('is near zero for negative Vgk (normal operation)', () => {
       // Grid current only flows when Vgk > 0 (grid conduction)
-      const Ig = cohenHelieIg(-1.5);
+      const Ig = gridCurrentIg(-1.5);
       expect(Ig).toBeCloseTo(0, 5);
     });
 
     it('is positive for positive Vgk (grid conduction)', () => {
-      const Ig = cohenHelieIg(5.0);
+      const Ig = gridCurrentIg(5.0);
       expect(Ig).toBeGreaterThan(0);
     });
 
     it('increases with increasing Vgk', () => {
-      const Ig_low = cohenHelieIg(1.0);
-      const Ig_high = cohenHelieIg(5.0);
+      const Ig_low = gridCurrentIg(1.0);
+      const Ig_high = gridCurrentIg(5.0);
       expect(Ig_high).toBeGreaterThan(Ig_low);
     });
 
     it('is always non-negative', () => {
       for (const Vgk of [-10, -5, -2, -1, 0, 1, 5, 10]) {
-        expect(cohenHelieIg(Vgk)).toBeGreaterThanOrEqual(0);
+        expect(gridCurrentIg(Vgk)).toBeGreaterThanOrEqual(0);
       }
     });
   });
@@ -82,20 +82,20 @@ describe('Cohen-Helie 12AX7 tube model', () => {
       const J = cohenHelieJacobian(Vpk, Vgk);
 
       // Numerical dIp/dVpk
-      const Ip_hi = cohenHelieIk(Vpk + eps, Vgk) - cohenHelieIg(Vgk);
-      const Ip_lo = cohenHelieIk(Vpk - eps, Vgk) - cohenHelieIg(Vgk);
+      const Ip_hi = cohenHelieIk(Vpk + eps, Vgk) - gridCurrentIg(Vgk);
+      const Ip_lo = cohenHelieIk(Vpk - eps, Vgk) - gridCurrentIg(Vgk);
       const dIp_dVpk_num = (Ip_hi - Ip_lo) / (2 * eps);
       expect(J[0]).toBeCloseTo(dIp_dVpk_num, 4);
 
       // Numerical dIp/dVgk
-      const Ip_hi2 = cohenHelieIk(Vpk, Vgk + eps) - cohenHelieIg(Vgk + eps);
-      const Ip_lo2 = cohenHelieIk(Vpk, Vgk - eps) - cohenHelieIg(Vgk - eps);
+      const Ip_hi2 = cohenHelieIk(Vpk, Vgk + eps) - gridCurrentIg(Vgk + eps);
+      const Ip_lo2 = cohenHelieIk(Vpk, Vgk - eps) - gridCurrentIg(Vgk - eps);
       const dIp_dVgk_num = (Ip_hi2 - Ip_lo2) / (2 * eps);
       expect(J[1]).toBeCloseTo(dIp_dVgk_num, 4);
 
       // Numerical dIg/dVgk
-      const Ig_hi = cohenHelieIg(Vgk + eps);
-      const Ig_lo = cohenHelieIg(Vgk - eps);
+      const Ig_hi = gridCurrentIg(Vgk + eps);
+      const Ig_lo = gridCurrentIg(Vgk - eps);
       const dIg_dVgk_num = (Ig_hi - Ig_lo) / (2 * eps);
       expect(J[3]).toBeCloseTo(dIg_dVgk_num, 4);
     });
@@ -105,7 +105,7 @@ describe('Cohen-Helie 12AX7 tube model', () => {
     it('plate current equals cathode minus grid current', () => {
       const Vpk = 200, Vgk = -1.0;
       const Ik = cohenHelieIk(Vpk, Vgk);
-      const Ig = cohenHelieIg(Vgk);
+      const Ig = gridCurrentIg(Vgk);
       const Ip = Ik - Ig;
       expect(Ip).toBeCloseTo(Ik, 6); // Ig ≈ 0 for negative Vgk
       expect(Ip).toBeGreaterThan(0);
