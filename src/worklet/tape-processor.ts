@@ -417,7 +417,6 @@ class TapeProcessor extends AudioWorkletProcessor {
     const trimInputXfmr = this.stageGainLin.get('inputXfmr') ?? 1.0;
     const trimRecordAmp = this.stageGainLin.get('recordAmp') ?? 1.0;
     const trimRecordEQ = this.stageGainLin.get('recordEQ') ?? 1.0;
-    const trimBias = this.stageGainLin.get('bias') ?? 1.0;
     const trimHysteresis = this.stageGainLin.get('hysteresis') ?? 1.0;
     const trimHead = this.stageGainLin.get('head') ?? 1.0;
     const trimTransport = this.stageGainLin.get('transport') ?? 1.0;
@@ -510,11 +509,22 @@ class TapeProcessor extends AudioWorkletProcessor {
           singleSample[0] = x;
           const upsampled = dsp.oversampler.upsample(singleSample);
           for (let j = 0; j < upsampled.length; j++) {
+            updateStageMeter(slRecordAmp, 0, upsampled[j]);
             if (!bypassRecordAmp) upsampled[j] = dsp.recordAmp.process(upsampled[j]);
+            upsampled[j] *= trimRecordAmp;
+            updateStageMeter(slRecordAmp, 1, upsampled[j]);
+
+            updateStageMeter(slRecordEQ, 0, upsampled[j]);
             if (!bypassRecordEQ) upsampled[j] = dsp.recordEQ.process(upsampled[j]);
+            upsampled[j] *= trimRecordEQ;
+            updateStageMeter(slRecordEQ, 1, upsampled[j]);
+
             // Bias is applied parametrically via hysteresis.setBias() (above),
             // not as an additive oscillator in the signal chain.
+            updateStageMeter(slHysteresis, 0, upsampled[j]);
             if (!bypassHysteresis) upsampled[j] = dsp.hysteresis.process(upsampled[j]);
+            upsampled[j] *= trimHysteresis;
+            updateStageMeter(slHysteresis, 1, upsampled[j]);
           }
           const downsampled = dsp.oversampler.downsample(upsampled);
           x = downsampled[0];
@@ -530,24 +540,19 @@ class TapeProcessor extends AudioWorkletProcessor {
             const prev = this.stageSaturation.get('hysteresis')!;
             this.stageSaturation.set('hysteresis', prev + (sd - prev) * (sd > prev ? (1 - attackCoeff) : (1 - releaseCoeff)));
           }
+        } else {
+          // All oversampled stages bypassed — pass-through metering so meters stay alive
+          updateStageMeter(slRecordAmp, 0, x);
+          updateStageMeter(slRecordAmp, 1, x);
+          updateStageMeter(slRecordEQ, 0, x);
+          updateStageMeter(slRecordEQ, 1, x);
+          updateStageMeter(slHysteresis, 0, x);
+          updateStageMeter(slHysteresis, 1, x);
         }
 
-        // Per-stage metering for oversampled stages (approximated in base-rate signal path)
-        updateStageMeter(slRecordAmp, 0, x);
-        x *= trimRecordAmp;
-        updateStageMeter(slRecordAmp, 1, x);
-
-        updateStageMeter(slRecordEQ, 0, x);
-        x *= trimRecordEQ;
-        updateStageMeter(slRecordEQ, 1, x);
-
+        // Bias metering: pass-through (bias is parametric, no signal modification)
         updateStageMeter(slBias, 0, x);
-        x *= trimBias;
         updateStageMeter(slBias, 1, x);
-
-        updateStageMeter(slHysteresis, 0, x);
-        x *= trimHysteresis;
-        updateStageMeter(slHysteresis, 1, x);
 
         // Head model
         updateStageMeter(slHead, 0, x);

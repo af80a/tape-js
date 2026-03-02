@@ -82,7 +82,6 @@ export const STAGE_DEFS: Record<StageId, StageDef> = {
     label: 'Bias',
     params: {
       level: { label: 'Level', min: 0, max: 1, default: 0.5, formatValue: (v) => v.toFixed(2) },
-      _trim: TRIM_PARAM,
     },
   },
   hysteresis: {

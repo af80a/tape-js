@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback } from 'react';
 import { useAudioEngine } from '../../stores/audio-engine';
 import { useStageParams } from '../../stores/stage-params';
 import { Knob } from '../controls/Knob';
@@ -30,14 +30,10 @@ export function CompactView({ onPresetChange }: CompactViewProps) {
   const preset = useStageParams((s) => s.currentPreset);
   const setStageParam = useStageParams((s) => s.setStageParam);
 
-  // Clear graph-view overrides when compact view knobs are used,
-  // so AudioParam values take effect in the worklet
-  const overridesCleared = useRef(false);
+  // Clear graph-view overrides each time a compact knob is touched,
+  // so AudioParam values take effect in the worklet.
   const clearOverrides = useCallback(() => {
-    if (!overridesCleared.current) {
-      postMessage({ type: 'clear-param-overrides' });
-      overridesCleared.current = true;
-    }
+    postMessage({ type: 'clear-param-overrides' });
   }, [postMessage]);
 
   const [autoGain, setAutoGain] = useState(false);
