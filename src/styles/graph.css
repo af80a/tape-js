@@ -242,7 +242,7 @@
 }
 
 .scope-panel__scale-label {
-  font-size: 8px;
+  font-size: 9px;
   color: #555d6b;
   min-width: 40px;
   text-align: center;
@@ -252,6 +252,7 @@
 .scope-panel__scale-btn {
   background: none;
   border: none;
+  outline: none;
   color: #555d6b;
   font-size: 11px;
   line-height: 1;
