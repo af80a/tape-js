@@ -1,34 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { BiasOscillator } from '../bias';
 import { HysteresisProcessor } from '../hysteresis';
 import { TransportModel } from '../transport';
 import { HeadModel } from '../head-model';
 import { TransformerModel } from '../transformer';
-
-describe('BiasOscillator.setFrequency', () => {
-  it('changes oscillator frequency without resetting phase', () => {
-    const bias = new BiasOscillator(48000, 80000);
-    // Process a few samples at default frequency
-    const out1 = bias.process(0);
-
-    // Change frequency
-    bias.setFrequency(60000);
-    const out2 = bias.process(0);
-
-    // Should still produce output (not reset to zero)
-    expect(typeof out1).toBe('number');
-    expect(typeof out2).toBe('number');
-  });
-
-  it('caps frequency below Nyquist', () => {
-    const bias = new BiasOscillator(48000);
-    // Setting frequency above 0.4 * sampleRate should be capped
-    bias.setFrequency(200000);
-    // Should not throw and still produce valid output
-    const out = bias.process(0);
-    expect(isFinite(out)).toBe(true);
-  });
-});
 
 describe('HysteresisProcessor.setK / setC', () => {
   it('setK changes pinning parameter', () => {

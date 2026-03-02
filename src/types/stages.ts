@@ -161,8 +161,7 @@ export const STAGE_DEFS: Record<StageId, StageDef> = {
     id: 'output',
     label: 'Output',
     params: {
-      outputGain: { label: 'Output Gain', min: 0.25, max: 4, default: 1.0, formatValue: (v) => { const db = 20 * Math.log10(v); return `${db >= 0 ? '+' : ''}${db.toFixed(1)} dB`; } },
-      _trim: TRIM_PARAM,
+      outputGain: { label: 'Output Gain', min: 0.0625, max: 16, default: 1.0, formatValue: (v) => { const db = 20 * Math.log10(v); return `${db >= 0 ? '+' : ''}${db.toFixed(1)} dB`; } },
     },
   },
 };

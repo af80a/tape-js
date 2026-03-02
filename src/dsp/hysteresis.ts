@@ -136,14 +136,19 @@ export class HysteresisProcessor {
     const H_mid = (H + this.H_n1) * 0.5;
     const H_d_mid = (H_d + this.H_d_n1) * 0.5;
 
-    // Compute effective c: adaptive per-sample if bias mode, flat otherwise
-    const c = this.biasActive ? this.computeAdaptiveC(H) : this.c;
+    // Compute effective c at each RK4 evaluation point.
+    // When biasActive, c depends on the instantaneous H so each stage gets
+    // the correct value for its H. When flat, getEffectiveC returns this.c
+    // for all three calls at negligible cost.
+    const c1   = this.getEffectiveC(this.H_n1);
+    const cMid = this.getEffectiveC(H_mid);
+    const c4   = this.getEffectiveC(H);
 
     // RK4 integration
-    const k1 = T * this.dMdt(this.M_n1, this.H_n1, this.H_d_n1, c);
-    const k2 = T * this.dMdt(this.M_n1 + k1 * 0.5, H_mid, H_d_mid, c);
-    const k3 = T * this.dMdt(this.M_n1 + k2 * 0.5, H_mid, H_d_mid, c);
-    const k4 = T * this.dMdt(this.M_n1 + k3, H, H_d, c);
+    const k1 = T * this.dMdt(this.M_n1,          this.H_n1, this.H_d_n1, c1);
+    const k2 = T * this.dMdt(this.M_n1 + k1 * 0.5, H_mid,  H_d_mid,     cMid);
+    const k3 = T * this.dMdt(this.M_n1 + k2 * 0.5, H_mid,  H_d_mid,     cMid);
+    const k4 = T * this.dMdt(this.M_n1 + k3,     H,         H_d,         c4);
 
     const M_new = this.M_n1 + (k1 + 2 * k2 + 2 * k3 + k4) / 6;
 
@@ -209,12 +214,14 @@ export class HysteresisProcessor {
     // Delta: direction of magnetization change
     const delta = H_d >= 0 ? 1 : -1;
 
-    // kap1: irreversible component gating
-    // Only active when delta and M_diff have the same sign
+    // kap1: irreversible component gating, weighted by (1-c).
+    // Only active when delta and M_diff have the same sign.
+    // The (1-c) factor belongs here in the numerator only.
     const kap1 = Math.sign(delta) === Math.sign(M_diff) ? (1 - c) : 0;
 
     // f1: irreversible magnetization component
-    const f1_denom = (1 - c) * delta * this.k - this.alpha * M_diff;
+    // Denominator is delta*k - alpha*M_diff (no (1-c) factor on k).
+    const f1_denom = delta * this.k - this.alpha * M_diff;
     let f1: number;
     if (Math.abs(f1_denom) < 1e-12) {
       f1 = 0; // protect against division by zero

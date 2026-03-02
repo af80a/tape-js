@@ -19,10 +19,12 @@ const GAIN_PRESETS = [48, 24, 12, 6, 3].map((span) => {
   return { min: center - span / 2, max: center + span / 2, label: `±${span / 2} dB` };
 });
 
-const SAT_PRESETS = [1.0, 0.5, 0.25, 0.1].map((span) => {
-  const center = 0.5;
-  return { min: center - span / 2, max: center + span / 2, label: `${Math.round(span * 100)}%` };
-});
+// Saturation baseline is always 0 — zoom shrinks the ceiling, not the center.
+const SAT_PRESETS = [1.0, 0.75, 0.5, 0.25].map((max) => ({
+  min: 0,
+  max,
+  label: `${Math.round(max * 100)}%`,
+}));
 
 const LEVEL_COLOR = (v: number) => {
   if (v > 3) return '#ff4444';

@@ -110,9 +110,7 @@ export class TransformerModel {
   private computeBout(flux: number, satGain: number, asymmetry: number): number {
     if (satGain <= 0.001) return 0;
     const phi = flux * satGain * this.coreStiffness;
-    let Bout = Math.tanh(phi);
-    Bout += asymmetry * phi / (1 + phi * phi);
-    return Bout;
+    return Math.tanh(phi + asymmetry) - Math.tanh(asymmetry);
   }
 
   /**
@@ -124,10 +122,22 @@ export class TransformerModel {
     // 1. HPF (LF coupling — finite primary inductance)
     let x = this.hpf.process(input);
 
+    // Catch filter blowups from rapid parameter sweeps
+    if (Math.abs(x) > 50) {
+      this.reset();
+      x = 0;
+    }
+
     // 2. Flux-based core saturation
     // Always maintain flux state so transitions in/out of saturation are clean
     const T = 1 / this.sampleRate;
     this.flux = this.flux * this.fluxDecay + x * T;
+    
+    // Cap flux to prevent integrator windup from huge transients
+    if (this.flux > 50) this.flux = 50;
+    else if (this.flux < -50) this.flux = -50;
+    else if (Math.abs(this.flux) < 1e-12) this.flux = 0; // Anti-denormal
+
     if (!Number.isFinite(this.flux)) {
       this.flux = 0;
       this.prevBout = 0;
@@ -142,21 +152,20 @@ export class TransformerModel {
       const phi = this.flux * this.satGain * this.coreStiffness;
 
       // B-H curve: tanh models the anhysteretic magnetization curve
-      // of soft magnetic materials (mu-metal, silicon steel, nickel)
-      let Bout = Math.tanh(phi);
-
-      // Even-harmonic asymmetry from remanent magnetization / DC bias
-      // in real cores. Bounded term prevents runaway at extreme phi.
-      Bout += this.asymmetry * phi / (1 + phi * phi);
+      // of soft magnetic materials. Remanent magnetization (asymmetry)
+      // is physically modeled as a static DC bias offset in the flux.
+      // Subtracting tanh(asymmetry) centers the dynamic swing.
+      const Bout = Math.tanh(phi + this.asymmetry) - Math.tanh(this.asymmetry);
 
       // Faraday's law: V_out ∝ dB/dt
       const dBdt = (Bout - this.prevBout) * this.sampleRate;
       this.prevBout = Bout;
 
-      // Normalize: at small signals, tanh(phi) ≈ phi, so the chain
-      // integrate → identity → differentiate gives back x scaled by
-      // (satGain * coreStiffness). Divide out for unity small-signal gain.
-      x = dBdt / (this.satGain * this.coreStiffness);
+      // Normalize for unity small-signal gain.
+      // The derivative of (tanh(phi + a) - tanh(a)) at phi=0 is sech^2(a).
+      // Since sech^2(a) = 1 - tanh^2(a), we divide out the full factor to restore unity gain.
+      const sech2 = 1 - Math.pow(Math.tanh(this.asymmetry), 2);
+      x = dBdt / (this.satGain * this.coreStiffness * sech2);
     } else {
       // Saturation bypassed — keep prevBout at 0 so re-enabling starts clean
       this.prevBout = 0;
@@ -164,13 +173,14 @@ export class TransformerModel {
 
     // 3. Eddy current losses (first-order LP — progressive HF attenuation)
     this.eddyZ1 = x + this.eddyCoeff * (this.eddyZ1 - x);
+    if (Math.abs(this.eddyZ1) < 1e-12) this.eddyZ1 = 0; // Anti-denormal
     x = this.eddyZ1;
 
     // 4. LPF (HF rolloff — leakage inductance + winding capacitance resonance)
     x = this.lpf.process(x);
 
-    // Fail-safe: never let NaN/Infinity poison downstream chain.
-    if (!Number.isFinite(x)) {
+    // Fail-safe: catch filter blowups and NaNs to protect downstream chain
+    if (!Number.isFinite(x) || Math.abs(x) > 50) {
       this.reset();
       return 0;
     }

@@ -11,7 +11,6 @@ import { AmplifierModel } from '../dsp/amplifier';
 import { TapeEQ } from '../dsp/eq-curves';
 import { type TapeSpeed } from '../dsp/eq-curves';
 import { HeadModel } from '../dsp/head-model';
-import { BiasOscillator } from '../dsp/bias';
 import { TapeNoise } from '../dsp/noise';
 import { TransportModel } from '../dsp/transport';
 import { Oversampler } from '../dsp/oversampling';
@@ -47,7 +46,6 @@ const ALL_STAGE_IDS: StageId[] = [
 interface ChannelDSP {
   inputXfmr: TransformerModel;
   recordAmp: AmplifierModel;
-  bias: BiasOscillator;
   recordEQ: TapeEQ;
   hysteresis: HysteresisProcessor;
   oversampler: Oversampler;
@@ -57,24 +55,6 @@ interface ChannelDSP {
   outputXfmr: TransformerModel;
   transport: TransportModel;
   noise: TapeNoise;
-}
-
-// ---------------------------------------------------------------------------
-// Drive compensation constants
-// ---------------------------------------------------------------------------
-
-const DRIVE_COMP_NEGATIVE_SLOPE = 0.9;
-const DRIVE_COMP_POSITIVE_SLOPE = 0.38;
-const DRIVE_COMP_SMOOTHING = 0.002;
-
-function computeDriveCompDb(driveNorm: number): number {
-  // Convert 0-1 drive knob to approximate dB effect on output level.
-  // Drive 0.5 = unity (0 dB); range roughly -12 to +12 dB.
-  const driveDb = (driveNorm - 0.5) * 24;
-  if (driveDb < 0) {
-    return -DRIVE_COMP_NEGATIVE_SLOPE * driveDb;
-  }
-  return -DRIVE_COMP_POSITIVE_SLOPE * driveDb;
 }
 
 // ---------------------------------------------------------------------------
@@ -100,16 +80,13 @@ class TapeProcessor extends AudioWorkletProcessor {
       { name: 'wow',        defaultValue: 0.15, minValue: 0,    maxValue: 1,   automationRate: 'k-rate' },
       { name: 'flutter',    defaultValue: 0.1,  minValue: 0,    maxValue: 1,   automationRate: 'k-rate' },
       { name: 'hiss',       defaultValue: 0.05, minValue: 0,    maxValue: 1,   automationRate: 'k-rate' },
-      { name: 'outputGain', defaultValue: 1.0,  minValue: 0.25, maxValue: 4.0, automationRate: 'k-rate' },
+      { name: 'outputGain', defaultValue: 1.0,  minValue: 0.0625, maxValue: 16.0, automationRate: 'k-rate' },
     ];
   }
 
   private channels: ChannelDSP[] = [];
   private alive = true;
   private bypassed = false;
-  private autoGain = false;
-  private autoGainCompLin = 1.0;
-  private autoGainCompTarget = 1.0;
   private meterFrame = 0;
   private nextMeterFrame: number;
 
@@ -181,12 +158,6 @@ class TapeProcessor extends AudioWorkletProcessor {
         this.initDSP(2, this.currentPreset, this.oversampleFactor, this.tapeSpeed);
       } else if (type === 'set-bypass') {
         this.bypassed = !!data.value;
-      } else if (type === 'set-autogain') {
-        this.autoGain = !!data.value;
-        if (!this.autoGain) {
-          this.autoGainCompLin = 1.0;
-          this.autoGainCompTarget = 1.0;
-        }
       } else if (type === 'clear-param-overrides') {
         // CompactView changed an AudioParam — clear all overrides so AudioParams take effect
         this.stageParamOverrides.clear();
@@ -320,10 +291,6 @@ class TapeProcessor extends AudioWorkletProcessor {
     for (let ch = 0; ch < channels; ch++) {
       const inputXfmr = new TransformerModel(fs, preset.inputTransformer);
       const recordAmp = new AmplifierModel(preset.ampType, preset.recordAmpDrive, preset.tubeCircuit, fs * oversampleFactor);
-
-      const bias = new BiasOscillator(fs * oversampleFactor);
-      bias.setLevel(preset.biasDefault);
-
       const recordEQ = new TapeEQ(fs * oversampleFactor, preset.eqStandard, speed, 'record');
 
       const hysteresis = new HysteresisProcessor(fs * oversampleFactor);
@@ -353,7 +320,6 @@ class TapeProcessor extends AudioWorkletProcessor {
       this.channels.push({
         inputXfmr,
         recordAmp,
-        bias,
         recordEQ,
         hysteresis,
         oversampler,
@@ -424,7 +390,6 @@ class TapeProcessor extends AudioWorkletProcessor {
     const trimPlaybackEQ = this.stageGainLin.get('playbackEQ') ?? 1.0;
     const trimOutputXfmr = this.stageGainLin.get('outputXfmr') ?? 1.0;
     const trimNoise = this.stageGainLin.get('noise') ?? 1.0;
-    const trimOutput = this.stageGainLin.get('output') ?? 1.0;
 
     // Cache per-stage level accumulators as locals
     const slInputXfmr = this.stageLevels.get('inputXfmr')!;
@@ -450,6 +415,19 @@ class TapeProcessor extends AudioWorkletProcessor {
       sl.peakHold[slot] = Math.max(Math.abs(sample), sl.peakHold[slot] * peakRelCoeff);
     };
 
+    // Variant that accepts pre-computed average power and block peak, so the
+    // oversampled stages can accumulate across the block and apply a single
+    // base-rate update, keeping VU time constants independent of oversample factor.
+    const updateStageMeterPwr = (
+      sl: { vuPower: number[]; peakHold: number[] },
+      slot: 0 | 1,
+      power: number,
+      peak: number,
+    ): void => {
+      sl.vuPower[slot] += (power - sl.vuPower[slot]) * (power > sl.vuPower[slot] ? (1 - attackCoeff) : (1 - releaseCoeff));
+      sl.peakHold[slot] = Math.max(peak, sl.peakHold[slot] * peakRelCoeff);
+    };
+
     // Skip oversampling only when all oversampled stages are bypassed
     // (bias is now parametric, not in the oversampled chain)
     const skipOversampling = bypassRecordAmp && bypassRecordEQ && bypassHysteresis;
@@ -470,9 +448,8 @@ class TapeProcessor extends AudioWorkletProcessor {
       if (!bypassHysteresis) {
         dsp.hysteresis.setDrive(ov.get('hysteresis.drive') ?? drive);
         dsp.hysteresis.setSaturation(ov.get('hysteresis.saturation') ?? saturation);
-        if (!bypassBias) {
-          dsp.hysteresis.setBias(ov.get('bias.level') ?? biasParam);
-        }
+        // Bypass bias = no AC bias (biasAmplitude=0, c stays at baseC — underbias state).
+        dsp.hysteresis.setBias(bypassBias ? 0 : (ov.get('bias.level') ?? biasParam));
       }
       if (!bypassRecordAmp) dsp.recordAmp.setDrive(ov.get('recordAmp.drive') ?? ampDrive);
       if (!bypassPlaybackAmp) dsp.playbackAmp.setDrive(ov.get('playbackAmp.drive') ?? ampDrive * 0.8);
@@ -481,12 +458,6 @@ class TapeProcessor extends AudioWorkletProcessor {
         dsp.transport.setFlutter(ov.get('transport.flutter') ?? flutter);
       }
       if (!bypassNoise) dsp.noise.setLevel(ov.get('noise.hiss') ?? hiss);
-
-      // Compute deterministic drive compensation target once per block
-      if (this.autoGain) {
-        const compDb = computeDriveCompDb(drive) + computeDriveCompDb(saturation) * 0.5;
-        this.autoGainCompTarget = Math.max(0.25, Math.min(8, Math.pow(10, compDb / 20)));
-      }
 
       for (let i = 0; i < blockSize; i++) {
         const dry = inp[i];
@@ -499,55 +470,98 @@ class TapeProcessor extends AudioWorkletProcessor {
           const sd = dsp.inputXfmr.getSaturationDepth();
           const prev = this.stageSaturation.get('inputXfmr')!;
           this.stageSaturation.set('inputXfmr', prev + (sd - prev) * (sd > prev ? (1 - attackCoeff) : (1 - releaseCoeff)));
+        } else {
+          const prev = this.stageSaturation.get('inputXfmr')!;
+          this.stageSaturation.set('inputXfmr', prev * releaseCoeff);
         }
         x *= trimInputXfmr;
         updateStageMeter(slInputXfmr, 1, x);
 
-        // Oversample for record amp + record EQ + bias + hysteresis
-        // Order matches real tape machine: amp → pre-emphasis EQ → bias + tape
+        // Oversample for record amp + record EQ + hysteresis
+        // Order matches real tape machine: amp → pre-emphasis EQ → tape
         if (!skipOversampling) {
           singleSample[0] = x;
           const upsampled = dsp.oversampler.upsample(singleSample);
-          for (let j = 0; j < upsampled.length; j++) {
-            updateStageMeter(slRecordAmp, 0, upsampled[j]);
-            if (!bypassRecordAmp) upsampled[j] = dsp.recordAmp.process(upsampled[j]);
-            upsampled[j] *= trimRecordAmp;
-            updateStageMeter(slRecordAmp, 1, upsampled[j]);
+          const osLen = upsampled.length;
 
-            updateStageMeter(slRecordEQ, 0, upsampled[j]);
-            if (!bypassRecordEQ) upsampled[j] = dsp.recordEQ.process(upsampled[j]);
-            upsampled[j] *= trimRecordEQ;
-            updateStageMeter(slRecordEQ, 1, upsampled[j]);
+          // Accumulate average power and block peak at 4 points so VU ballistics
+          // run at base rate regardless of oversample factor.
+          // p0/k0: pre-recordAmp  p1/k1: post-recordAmp = pre-recordEQ
+          // p2/k2: post-recordEQ = pre-hysteresis  p3/k3: post-hysteresis
+          let p0 = 0, k0 = 0, p1 = 0, k1 = 0, p2 = 0, k2 = 0, p3 = 0, k3 = 0;
+          let maxSatRecordAmp = 0;
+          let maxSatHysteresis = 0;
 
-            // Bias is applied parametrically via hysteresis.setBias() (above),
-            // not as an additive oscillator in the signal chain.
-            updateStageMeter(slHysteresis, 0, upsampled[j]);
-            if (!bypassHysteresis) upsampled[j] = dsp.hysteresis.process(upsampled[j]);
-            upsampled[j] *= trimHysteresis;
-            updateStageMeter(slHysteresis, 1, upsampled[j]);
+          for (let j = 0; j < osLen; j++) {
+            let v = upsampled[j];
+            p0 += v * v; k0 = Math.max(k0, Math.abs(v));
+
+            if (!bypassRecordAmp) {
+              v = dsp.recordAmp.process(v);
+              maxSatRecordAmp = Math.max(maxSatRecordAmp, dsp.recordAmp.getSaturationDepth());
+            }
+            v *= trimRecordAmp;
+            p1 += v * v; k1 = Math.max(k1, Math.abs(v));
+
+            if (!bypassRecordEQ) v = dsp.recordEQ.process(v);
+            v *= trimRecordEQ;
+            p2 += v * v; k2 = Math.max(k2, Math.abs(v));
+
+            // Bias applied parametrically via hysteresis.setBias() above.
+            if (!bypassHysteresis) {
+              v = dsp.hysteresis.process(v);
+              maxSatHysteresis = Math.max(maxSatHysteresis, dsp.hysteresis.getSaturationDepth());
+            }
+            v *= trimHysteresis;
+            p3 += v * v; k3 = Math.max(k3, Math.abs(v));
+
+            upsampled[j] = v;
           }
+
+          const ooN = 1 / osLen;
+          updateStageMeterPwr(slRecordAmp,  0, p0 * ooN, k0);
+          updateStageMeterPwr(slRecordAmp,  1, p1 * ooN, k1);
+          updateStageMeterPwr(slRecordEQ,   0, p1 * ooN, k1);
+          updateStageMeterPwr(slRecordEQ,   1, p2 * ooN, k2);
+          updateStageMeterPwr(slHysteresis, 0, p2 * ooN, k2);
+          updateStageMeterPwr(slHysteresis, 1, p3 * ooN, k3);
+
           const downsampled = dsp.oversampler.downsample(upsampled);
           x = downsampled[0];
 
           if (!bypassRecordAmp) {
-            const sd = dsp.recordAmp.getSaturationDepth();
             const prev = this.stageSaturation.get('recordAmp')!;
-            this.stageSaturation.set('recordAmp', prev + (sd - prev) * (sd > prev ? (1 - attackCoeff) : (1 - releaseCoeff)));
+            this.stageSaturation.set('recordAmp', prev + (maxSatRecordAmp - prev) * (maxSatRecordAmp > prev ? (1 - attackCoeff) : (1 - releaseCoeff)));
+          } else {
+            const prev = this.stageSaturation.get('recordAmp')!;
+            this.stageSaturation.set('recordAmp', prev * releaseCoeff);
           }
-
           if (!bypassHysteresis) {
-            const sd = dsp.hysteresis.getSaturationDepth();
             const prev = this.stageSaturation.get('hysteresis')!;
-            this.stageSaturation.set('hysteresis', prev + (sd - prev) * (sd > prev ? (1 - attackCoeff) : (1 - releaseCoeff)));
+            this.stageSaturation.set('hysteresis', prev + (maxSatHysteresis - prev) * (maxSatHysteresis > prev ? (1 - attackCoeff) : (1 - releaseCoeff)));
+          } else {
+            const prev = this.stageSaturation.get('hysteresis')!;
+            this.stageSaturation.set('hysteresis', prev * releaseCoeff);
           }
         } else {
-          // All oversampled stages bypassed — pass-through metering so meters stay alive
-          updateStageMeter(slRecordAmp, 0, x);
-          updateStageMeter(slRecordAmp, 1, x);
-          updateStageMeter(slRecordEQ, 0, x);
-          updateStageMeter(slRecordEQ, 1, x);
-          updateStageMeter(slHysteresis, 0, x);
-          updateStageMeter(slHysteresis, 1, x);
+          // All oversampled stages bypassed — apply trims and pass-through metering.
+          const v0pwr = x * x; const v0abs = Math.abs(x);
+          updateStageMeterPwr(slRecordAmp, 0, v0pwr, v0abs);
+          x *= trimRecordAmp;
+          const v1pwr = x * x; const v1abs = Math.abs(x);
+          updateStageMeterPwr(slRecordAmp,  1, v1pwr, v1abs);
+          updateStageMeterPwr(slRecordEQ,   0, v1pwr, v1abs);
+          x *= trimRecordEQ;
+          const v2pwr = x * x; const v2abs = Math.abs(x);
+          updateStageMeterPwr(slRecordEQ,   1, v2pwr, v2abs);
+          updateStageMeterPwr(slHysteresis, 0, v2pwr, v2abs);
+          x *= trimHysteresis;
+          const v3pwr = x * x; const v3abs = Math.abs(x);
+          updateStageMeterPwr(slHysteresis, 1, v3pwr, v3abs);
+          
+          // Decay saturations since these stages are bypassed
+          this.stageSaturation.set('recordAmp', this.stageSaturation.get('recordAmp')! * releaseCoeff);
+          this.stageSaturation.set('hysteresis', this.stageSaturation.get('hysteresis')! * releaseCoeff);
         }
 
         // Bias metering: pass-through (bias is parametric, no signal modification)
@@ -580,6 +594,9 @@ class TapeProcessor extends AudioWorkletProcessor {
           const sd = dsp.playbackAmp.getSaturationDepth();
           const prev = this.stageSaturation.get('playbackAmp')!;
           this.stageSaturation.set('playbackAmp', prev + (sd - prev) * (sd > prev ? (1 - attackCoeff) : (1 - releaseCoeff)));
+        } else {
+          const prev = this.stageSaturation.get('playbackAmp')!;
+          this.stageSaturation.set('playbackAmp', prev * releaseCoeff);
         }
         x *= trimPlaybackAmp;
         updateStageMeter(slPlaybackAmp, 1, x);
@@ -597,6 +614,9 @@ class TapeProcessor extends AudioWorkletProcessor {
           const sd = dsp.outputXfmr.getSaturationDepth();
           const prev = this.stageSaturation.get('outputXfmr')!;
           this.stageSaturation.set('outputXfmr', prev + (sd - prev) * (sd > prev ? (1 - attackCoeff) : (1 - releaseCoeff)));
+        } else {
+          const prev = this.stageSaturation.get('outputXfmr')!;
+          this.stageSaturation.set('outputXfmr', prev * releaseCoeff);
         }
         x *= trimOutputXfmr;
         updateStageMeter(slOutputXfmr, 1, x);
@@ -607,19 +627,10 @@ class TapeProcessor extends AudioWorkletProcessor {
         // Clamp to [-2, 2]
         x = Math.max(-2, Math.min(2, x));
 
-        // Apply per-sample smoothed drive compensation
-        if (this.autoGain && !this.bypassed) {
-          this.autoGainCompLin += (this.autoGainCompTarget - this.autoGainCompLin) * DRIVE_COMP_SMOOTHING;
-          x *= this.autoGainCompLin;
-        }
-
         // Bypass or processed output
         updateStageMeter(slOutput, 0, x);
         out[i] = this.bypassed ? dry : x * outputGain;
-
-        // Output stage meter (after final gain)
-        const xOut = out[i] * trimOutput;
-        updateStageMeter(slOutput, 1, xOut);
+        updateStageMeter(slOutput, 1, out[i]);
 
         // VU ballistics metering (per-sample)
         const power = out[i] * out[i];
@@ -650,7 +661,7 @@ class TapeProcessor extends AudioWorkletProcessor {
       });
 
       // Build per-stage meter data
-      const levels: Record<string, { vuDb: number[]; peakDb: number[] }> = {};
+      const levels: Record<string, { vuDb: number[]; peakDb: number[]; saturation?: number }> = {};
       for (const id of ALL_STAGE_IDS) {
         const sl = this.stageLevels.get(id)!;
         const sVuDb: number[] = [];

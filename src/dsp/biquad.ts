@@ -229,9 +229,9 @@ export function designFirstOrderSection(
   tDen: number,
   fs: number,
 ): BiquadCoeffs {
-  // Bilinear transform: s → (2fs)(1 - z⁻¹)/(1 + z⁻¹)
-  const cn = 2 * fs * tNum;
-  const cd = 2 * fs * tDen;
+  // Pre-warped bilinear transform: matching analog magnitude exactly at the specified time constants
+  const cn = tNum > 0 ? 1 / Math.tan(1 / (2 * fs * tNum)) : 0;
+  const cd = tDen > 0 ? 1 / Math.tan(1 / (2 * fs * tDen)) : 0;
 
   return {
     b0: (1 + cn) / (1 + cd),
@@ -251,7 +251,7 @@ export function designFirstOrderSection(
  * @param fs  Sample rate in Hz
  */
 export function designFirstOrderLP(t: number, fs: number): BiquadCoeffs {
-  const c = 2 * fs * t;
+  const c = t > 0 ? 1 / Math.tan(1 / (2 * fs * t)) : 0;
   return {
     b0: 1 / (1 + c),
     b1: 1 / (1 + c),
@@ -270,7 +270,7 @@ export function designFirstOrderLP(t: number, fs: number): BiquadCoeffs {
  * @param fs  Sample rate in Hz
  */
 export function designFirstOrderHP(t: number, fs: number): BiquadCoeffs {
-  const c = 2 * fs * t;
+  const c = t > 0 ? 1 / Math.tan(1 / (2 * fs * t)) : 0;
   return {
     b0: c / (1 + c),
     b1: -c / (1 + c),

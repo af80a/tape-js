@@ -131,6 +131,7 @@ export class TransportModel {
 
   /** Set wow LFO rate in Hz (e.g., 0.5-3.0 Hz). */
   setWowRate(hz: number): void {
+    hz = Math.max(MIN_WOW_RATE_HZ, hz); // enforce buffer-sizing lower bound
     this.baseWowRate = TWO_PI * hz / this.sampleRate;
     this.wowRate = this.baseWowRate;
     this.wowDelayAmp = WOW_MAX_DEVIATION / this.baseWowRate;
@@ -138,6 +139,7 @@ export class TransportModel {
 
   /** Set flutter LFO rate in Hz (e.g., 3-15 Hz). */
   setFlutterRate(hz: number): void {
+    hz = Math.max(MIN_FLUTTER_RATE_HZ, hz); // enforce buffer-sizing lower bound
     this.flutterRate = TWO_PI * hz / this.sampleRate;
     this.flutterDelayAmp = FLUTTER_MAX_DEVIATION / this.flutterRate;
   }

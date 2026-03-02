@@ -460,15 +460,16 @@ export class AmplifierModel {
     const Videal = this.circuitParams.Vpp;
 
     // Rectifier current: (Videal - Vpp) / R_OUT models the supply recharging
-    // the filter cap. When Vpp < Videal (sag), current flows in to restore.
-    const Irect = (Videal - Vpp) / AmplifierModel.SAG_R_OUT;
+    // the filter cap. Rectifier diodes block reverse current, so Irect >= 0.
+    const Irect = Math.max(0, (Videal - Vpp) / AmplifierModel.SAG_R_OUT);
     const dVpp = (Irect - Ip - (Vpp - Vss) / AmplifierModel.SAG_R_FILTER)
                  / AmplifierModel.SAG_C1;
     const dVss = ((Vpp - Vss) / AmplifierModel.SAG_R_FILTER - Vss / AmplifierModel.SAG_R_BLEEDER)
                  / AmplifierModel.SAG_C2;
 
     this._sagVpp = Math.max(0, Vpp + T * dVpp);
-    this.sagVscreen = Math.max(0, Vss + T * dVss);
+    // sagVscreen cannot exceed the main supply — clamp to [0, _sagVpp].
+    this.sagVscreen = Math.max(0, Math.min(this._sagVpp, Vss + T * dVss));
   }
 
   // -------------------------------------------------------------------------
