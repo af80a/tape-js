@@ -15,6 +15,8 @@ interface SparklineProps {
   color?: string | ((value: number) => string);
   /** Draw a zero-line at this value. */
   zeroLine?: number;
+  /** Format function for min/max tick labels. If provided, renders labels. */
+  formatTick?: (v: number) => string;
 }
 
 export function Sparkline({
@@ -26,6 +28,7 @@ export function Sparkline({
   height = 36,
   color = '#44cc44',
   zeroLine,
+  formatTick,
 }: SparklineProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -45,8 +48,31 @@ export function Sparkline({
     const range = max - min;
     if (range <= 0) return;
 
+    // Reserve left gutter for tick labels
+    const tickPad = formatTick ? 30 : 0;
+    const plotLeft = tickPad;
+    const plotWidth = width - tickPad;
+
     const len = data.length;
-    const stepX = width / (len - 1);
+    const stepX = plotWidth / (len - 1);
+
+    // Tick labels (max at top, min at bottom)
+    if (formatTick) {
+      ctx.font = '8px Inter, system-ui, sans-serif';
+      ctx.fillStyle = '#555d6b';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'top';
+      ctx.fillText(formatTick(max), tickPad - 4, 1);
+      ctx.textBaseline = 'bottom';
+      ctx.fillText(formatTick(min), tickPad - 4, height - 1);
+
+      // Zero line label
+      if (zeroLine !== undefined) {
+        const zy = height - ((zeroLine - min) / range) * height;
+        ctx.textBaseline = 'middle';
+        ctx.fillText(formatTick(zeroLine), tickPad - 4, zy);
+      }
+    }
 
     // Zero line
     if (zeroLine !== undefined) {
@@ -54,7 +80,7 @@ export function Sparkline({
       ctx.strokeStyle = '#333a47';
       ctx.lineWidth = 0.5;
       ctx.beginPath();
-      ctx.moveTo(0, zy);
+      ctx.moveTo(plotLeft, zy);
       ctx.lineTo(width, zy);
       ctx.stroke();
     }
@@ -71,7 +97,7 @@ export function Sparkline({
       // Read circularly: oldest sample is cursor+1, newest is cursor
       const idx = (cursor + 1 + i) % len;
       const v = data[idx];
-      const x = i * stepX;
+      const x = plotLeft + i * stepX;
       const y = height - ((v - min) / range) * height;
 
       if (i === 0) {
@@ -88,7 +114,7 @@ export function Sparkline({
       ctx.strokeStyle = staticColor;
     }
     ctx.stroke();
-  }, [data, cursor, min, max, width, height, color, zeroLine]);
+  }, [data, cursor, min, max, width, height, color, zeroLine, formatTick]);
 
   return (
     <canvas
