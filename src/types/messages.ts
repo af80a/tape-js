@@ -15,4 +15,4 @@ export type WorkletMessage =
 /** Messages received FROM the worklet via port.onmessage */
 export type WorkletResponse =
   | { type: 'meters'; vuDb: number[]; peakDb: number[] }
-  | { type: 'stage-meters'; levels: Record<string, { vuDb: number[]; peakDb: number[] }> };
+  | { type: 'stage-meters'; levels: Record<string, { vuDb: number[]; peakDb: number[]; saturation?: number }> };

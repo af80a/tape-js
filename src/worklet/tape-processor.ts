@@ -123,6 +123,9 @@ class TapeProcessor extends AudioWorkletProcessor {
   // Per-stage metering accumulators: [input, output]
   private stageLevels: Map<StageId, { vuPower: number[]; peakHold: number[] }> = new Map();
 
+  // Per-stage saturation accumulators (smoothed 0-1 depth, only for nonlinear stages)
+  private stageSaturation: Map<StageId, number> = new Map();
+
   // Per-stage trim gain (linear): Map<StageId, number>
   private stageGainLin: Map<StageId, number> = new Map();
 
@@ -242,10 +245,7 @@ class TapeProcessor extends AudioWorkletProcessor {
           break;
         case 'recordAmp':
           if (param === 'drive') dsp.recordAmp.setDrive(value);
-          else if (param === 'Vpp' && this.currentPreset.tubeCircuit) {
-            const circuit = { ...this.currentPreset.tubeCircuit, Vpp: value };
-            dsp.recordAmp = new AmplifierModel('tube', dsp.recordAmp.getDrive(), circuit, sampleRate * this.oversampleFactor);
-          }
+          else if (param === 'Vpp') dsp.recordAmp.setVpp(value);
           break;
         case 'bias':
           if (param === 'level') {
@@ -272,10 +272,7 @@ class TapeProcessor extends AudioWorkletProcessor {
           break;
         case 'playbackAmp':
           if (param === 'drive') dsp.playbackAmp.setDrive(value);
-          else if (param === 'Vpp' && this.currentPreset.tubeCircuit) {
-            const circuit = { ...this.currentPreset.tubeCircuit, Vpp: value };
-            dsp.playbackAmp = new AmplifierModel('tube', dsp.playbackAmp.getDrive(), circuit, sampleRate);
-          }
+          else if (param === 'Vpp') dsp.playbackAmp.setVpp(value);
           break;
         case 'outputXfmr':
           if (param === 'satAmount') dsp.outputXfmr.reconfigure({ satAmount: value });
@@ -314,6 +311,10 @@ class TapeProcessor extends AudioWorkletProcessor {
       if (!this.stageGainLin.has(id)) {
         this.stageGainLin.set(id, 1.0);
       }
+    }
+
+    for (const id of ['inputXfmr', 'recordAmp', 'hysteresis', 'playbackAmp', 'outputXfmr'] as StageId[]) {
+      this.stageSaturation.set(id, 0);
     }
 
     for (let ch = 0; ch < channels; ch++) {
@@ -494,7 +495,12 @@ class TapeProcessor extends AudioWorkletProcessor {
 
         // Input transformer
         updateStageMeter(slInputXfmr, 0, x);
-        if (!bypassInputXfmr) x = dsp.inputXfmr.process(x);
+        if (!bypassInputXfmr) {
+          x = dsp.inputXfmr.process(x);
+          const sd = dsp.inputXfmr.getSaturationDepth();
+          const prev = this.stageSaturation.get('inputXfmr')!;
+          this.stageSaturation.set('inputXfmr', prev + (sd - prev) * (sd > prev ? (1 - attackCoeff) : (1 - releaseCoeff)));
+        }
         x *= trimInputXfmr;
         updateStageMeter(slInputXfmr, 1, x);
 
@@ -512,6 +518,18 @@ class TapeProcessor extends AudioWorkletProcessor {
           }
           const downsampled = dsp.oversampler.downsample(upsampled);
           x = downsampled[0];
+
+          if (!bypassRecordAmp) {
+            const sd = dsp.recordAmp.getSaturationDepth();
+            const prev = this.stageSaturation.get('recordAmp')!;
+            this.stageSaturation.set('recordAmp', prev + (sd - prev) * (sd > prev ? (1 - attackCoeff) : (1 - releaseCoeff)));
+          }
+
+          if (!bypassHysteresis) {
+            const sd = dsp.hysteresis.getSaturationDepth();
+            const prev = this.stageSaturation.get('hysteresis')!;
+            this.stageSaturation.set('hysteresis', prev + (sd - prev) * (sd > prev ? (1 - attackCoeff) : (1 - releaseCoeff)));
+          }
         }
 
         // Per-stage metering for oversampled stages (approximated in base-rate signal path)
@@ -552,7 +570,12 @@ class TapeProcessor extends AudioWorkletProcessor {
 
         // Playback amplifier
         updateStageMeter(slPlaybackAmp, 0, x);
-        if (!bypassPlaybackAmp) x = dsp.playbackAmp.process(x);
+        if (!bypassPlaybackAmp) {
+          x = dsp.playbackAmp.process(x);
+          const sd = dsp.playbackAmp.getSaturationDepth();
+          const prev = this.stageSaturation.get('playbackAmp')!;
+          this.stageSaturation.set('playbackAmp', prev + (sd - prev) * (sd > prev ? (1 - attackCoeff) : (1 - releaseCoeff)));
+        }
         x *= trimPlaybackAmp;
         updateStageMeter(slPlaybackAmp, 1, x);
 
@@ -564,7 +587,12 @@ class TapeProcessor extends AudioWorkletProcessor {
 
         // Output transformer
         updateStageMeter(slOutputXfmr, 0, x);
-        if (!bypassOutputXfmr) x = dsp.outputXfmr.process(x);
+        if (!bypassOutputXfmr) {
+          x = dsp.outputXfmr.process(x);
+          const sd = dsp.outputXfmr.getSaturationDepth();
+          const prev = this.stageSaturation.get('outputXfmr')!;
+          this.stageSaturation.set('outputXfmr', prev + (sd - prev) * (sd > prev ? (1 - attackCoeff) : (1 - releaseCoeff)));
+        }
         x *= trimOutputXfmr;
         updateStageMeter(slOutputXfmr, 1, x);
 
@@ -629,6 +657,10 @@ class TapeProcessor extends AudioWorkletProcessor {
           sPeakDb.push(Math.max(-60, Math.min(9, pk)));
         }
         levels[id] = { vuDb: sVuDb, peakDb: sPeakDb };
+        const sat = this.stageSaturation.get(id);
+        if (sat !== undefined) {
+          levels[id].saturation = sat;
+        }
       }
 
       this.port.postMessage({

@@ -6,6 +6,7 @@ import { STAGE_IDS } from '../types/stages';
 export interface StageMeterLevels {
   vuDb: number[];
   peakDb: number[];
+  saturation?: number;
 }
 
 function initStageMeterState(): Record<string, StageMeterLevels> {
