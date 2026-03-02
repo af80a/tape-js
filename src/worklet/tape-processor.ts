@@ -485,26 +485,28 @@ class TapeProcessor extends AudioWorkletProcessor {
             if (!bypassInputXfmr) {
               v = dsp.inputXfmr.process(v);
               maxSatInputXfmr = Math.max(maxSatInputXfmr, dsp.inputXfmr.getSaturationDepth());
+              v *= trimInputXfmr;
             }
-            v *= trimInputXfmr;
             p0 += v * v; k0 = Math.max(k0, Math.abs(v));
 
             if (!bypassRecordAmp) {
               v = dsp.recordAmp.process(v);
               maxSatRecordAmp = Math.max(maxSatRecordAmp, dsp.recordAmp.getSaturationDepth());
+              v *= trimRecordAmp;
             }
-            v *= trimRecordAmp;
             p1 += v * v; k1 = Math.max(k1, Math.abs(v));
 
-            if (!bypassRecordEQ) v = dsp.recordEQ.process(v);
-            v *= trimRecordEQ;
+            if (!bypassRecordEQ) {
+              v = dsp.recordEQ.process(v);
+              v *= trimRecordEQ;
+            }
             p2 += v * v; k2 = Math.max(k2, Math.abs(v));
 
             if (!bypassHysteresis) {
               v = dsp.hysteresis.process(v);
               maxSatHysteresis = Math.max(maxSatHysteresis, dsp.hysteresis.getSaturationDepth());
+              v *= trimHysteresis;
             }
-            v *= trimHysteresis;
             p3 += v * v; k3 = Math.max(k3, Math.abs(v));
 
             upsampled[j] = v;
@@ -544,21 +546,17 @@ class TapeProcessor extends AudioWorkletProcessor {
           const v0pwr = x * x; const v0abs = Math.abs(x);
           updateStageMeterPwr(slInputXfmr, 1, v0pwr, v0abs);
           updateStageMeterPwr(slRecordAmp, 0, v0pwr, v0abs);
-          x *= trimInputXfmr;
           
           const v1pwr = x * x; const v1abs = Math.abs(x);
           updateStageMeterPwr(slRecordAmp,  1, v1pwr, v1abs);
           updateStageMeterPwr(slRecordEQ,   0, v1pwr, v1abs);
-          x *= trimRecordAmp;
           
           const v2pwr = x * x; const v2abs = Math.abs(x);
           updateStageMeterPwr(slRecordEQ,   1, v2pwr, v2abs);
           updateStageMeterPwr(slHysteresis, 0, v2pwr, v2abs);
-          x *= trimRecordEQ;
           
           const v3pwr = x * x; const v3abs = Math.abs(x);
           updateStageMeterPwr(slHysteresis, 1, v3pwr, v3abs);
-          x *= trimHysteresis;
           
           this.stageSaturation.set('inputXfmr', this.stageSaturation.get('inputXfmr')! * releaseCoeff);
           this.stageSaturation.set('recordAmp', this.stageSaturation.get('recordAmp')! * releaseCoeff);
@@ -571,18 +569,24 @@ class TapeProcessor extends AudioWorkletProcessor {
 
         // --- TAPE/HEAD INTERFACE (Base rate) ---
         updateStageMeter(slHead, 0, x);
-        if (!bypassHead) x = dsp.head.process(x);
-        x *= trimHead;
+        if (!bypassHead) {
+          x = dsp.head.process(x);
+          x *= trimHead;
+        }
         updateStageMeter(slHead, 1, x);
 
         updateStageMeter(slTransport, 0, x);
-        if (!bypassTransport) x = dsp.transport.process(x);
-        x *= trimTransport;
+        if (!bypassTransport) {
+          x = dsp.transport.process(x);
+          x *= trimTransport;
+        }
         updateStageMeter(slTransport, 1, x);
 
         updateStageMeter(slNoise, 0, x);
-        if (!bypassNoise) x += dsp.noise.process(Math.abs(x));
-        x *= trimNoise;
+        if (!bypassNoise) {
+          x += dsp.noise.process(Math.abs(x));
+          x *= trimNoise;
+        }
         updateStageMeter(slNoise, 1, x);
 
         // --- PLAYBACK CHAIN (Oversampled) ---
@@ -605,19 +609,21 @@ class TapeProcessor extends AudioWorkletProcessor {
             if (!bypassPlaybackAmp) {
               v = dsp.playbackAmp.process(v);
               maxSatPlaybackAmp = Math.max(maxSatPlaybackAmp, dsp.playbackAmp.getSaturationDepth());
+              v *= trimPlaybackAmp;
             }
-            v *= trimPlaybackAmp;
             p0 += v * v; k0 = Math.max(k0, Math.abs(v));
 
-            if (!bypassPlaybackEQ) v = dsp.playbackEQ.process(v);
-            v *= trimPlaybackEQ;
+            if (!bypassPlaybackEQ) {
+              v = dsp.playbackEQ.process(v);
+              v *= trimPlaybackEQ;
+            }
             p1 += v * v; k1 = Math.max(k1, Math.abs(v));
 
             if (!bypassOutputXfmr) {
               v = dsp.outputXfmr.process(v);
               maxSatOutputXfmr = Math.max(maxSatOutputXfmr, dsp.outputXfmr.getSaturationDepth());
+              v *= trimOutputXfmr;
             }
-            v *= trimOutputXfmr;
             p2 += v * v; k2 = Math.max(k2, Math.abs(v));
 
             upsampled[j] = v;
@@ -651,16 +657,13 @@ class TapeProcessor extends AudioWorkletProcessor {
           const v0pwr = x * x; const v0abs = Math.abs(x);
           updateStageMeterPwr(slPlaybackAmp, 1, v0pwr, v0abs);
           updateStageMeterPwr(slPlaybackEQ, 0, v0pwr, v0abs);
-          x *= trimPlaybackAmp;
           
           const v1pwr = x * x; const v1abs = Math.abs(x);
           updateStageMeterPwr(slPlaybackEQ, 1, v1pwr, v1abs);
           updateStageMeterPwr(slOutputXfmr, 0, v1pwr, v1abs);
-          x *= trimPlaybackEQ;
           
           const v2pwr = x * x; const v2abs = Math.abs(x);
           updateStageMeterPwr(slOutputXfmr, 1, v2pwr, v2abs);
-          x *= trimOutputXfmr;
           
           this.stageSaturation.set('playbackAmp', this.stageSaturation.get('playbackAmp')! * releaseCoeff);
           this.stageSaturation.set('outputXfmr', this.stageSaturation.get('outputXfmr')! * releaseCoeff);

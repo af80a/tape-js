@@ -107,7 +107,7 @@ describe('Cohen-Helie 12AX7 tube model', () => {
       const Ik = cohenHelieIk(Vpk, Vgk);
       const Ig = gridCurrentIg(Vgk);
       const Ip = Ik - Ig;
-      expect(Ip).toBeCloseTo(Ik, 6); // Ig ≈ 0 for negative Vgk
+      expect(Ip).toBeCloseTo(Ik, 5); // Ig is very small but non-zero due to contact potential
       expect(Ip).toBeGreaterThan(0);
     });
   });

@@ -16,9 +16,6 @@ const CH_Gk = 2.14e-3;     // cathode current scaling
 const CH_mu = 100.8;        // amplification factor
 const CH_Ek = 1.303;        // cathode current exponent
 const CH_Ck = 3.04;         // cathode transition smoothness
-const CH_Gg = 6.06e-4;      // grid current scaling
-const CH_Eg = 1.354;        // grid current exponent
-const CH_Cg = 13.9;         // grid transition smoothness
 
 /** Soft-plus: log(1 + exp(x)) with overflow protection. */
 function softplus(x: number): number {
@@ -35,18 +32,21 @@ export function cohenHelieIk(Vpk: number, Vgk: number): number {
 
 /**
  * Grid current Ig(Vgk).
- * Upgraded from Cohen-Helie to a modified Child-Langmuir exponential diode model.
- * This physically accurate vacuum-diode equation allows the grid to draw
- * significantly more current when driven positive, accurately charging the
- * input coupling capacitor to create authentic, aggressive "blocking distortion."
+ * Upgraded to a continuously differentiable softplus Child-Langmuir model
+ * with a -0.7V thermal contact potential for zero-compromise physical accuracy.
  */
 export function gridCurrentIg(Vgk: number): number {
-  if (Vgk <= 0) {
-    // Soft leakage current for numerical stability in Newton solver
-    return 1e-9 * Math.exp(Vgk * 10);
+  const V_contact = -0.7;
+  const arg = (Vgk - V_contact) * 10;
+  let V_eff = 0;
+  if (arg > 30) {
+    V_eff = arg / 10;
+  } else if (arg < -30) {
+    V_eff = 0;
+  } else {
+    V_eff = Math.log(1 + Math.exp(arg)) / 10;
   }
-  // Child-Langmuir 3/2 power law for positive grid voltage
-  return 1e-9 + 1.5e-3 * Math.pow(Vgk, 1.5);
+  return 1e-9 + 1.5e-3 * Math.pow(V_eff, 1.5);
 }
 
 /**
@@ -64,12 +64,21 @@ export function cohenHelieJacobian(Vpk: number, Vgk: number): number[] {
   const dIk_dVgk = dIk_dargK * CH_Ck;
 
   // dIg/dVgk (Derivative of Child-Langmuir grid model)
-  let dIg_dVgk = 0;
-  if (Vgk <= 0) {
-    dIg_dVgk = 10e-9 * Math.exp(Vgk * 10);
+  const V_contact = -0.7;
+  const arg = (Vgk - V_contact) * 10;
+  let V_eff = 0;
+  let dVeff_dVgk = 0;
+  if (arg > 30) {
+    V_eff = arg / 10;
+    dVeff_dVgk = 1;
+  } else if (arg < -30) {
+    V_eff = 0;
+    dVeff_dVgk = 0;
   } else {
-    dIg_dVgk = 1.5 * 1.5e-3 * Math.sqrt(Vgk);
+    V_eff = Math.log(1 + Math.exp(arg)) / 10;
+    dVeff_dVgk = 1 / (1 + Math.exp(-arg));
   }
+  const dIg_dVgk = 1.5 * 1.5e-3 * Math.sqrt(V_eff) * dVeff_dVgk;
 
   // Ip = Ik - Ig, so dIp/dVpk = dIk/dVpk, dIp/dVgk = dIk/dVgk - dIg/dVgk
   return [
@@ -111,50 +120,45 @@ export class AmplifierModel {
   private circuitParams: TubeCircuitParams;
   private fs: number;
 
-  // Tube mode state
-  private x = [0, 0, 0];         // [V_Cc_in, V_Cc_out, V_Ck]
-  private i_nl_prev = [0, 0];    // [Ip, Ig] from previous sample
+  // Tube mode state (4 states now, natively including C_ga for Miller effect)
+  private x = [0, 0, 0, 0];         // [V_Cc_in, V_Cc_out, V_Ck, V_Cga]
+  private i_nl_prev = [0, 0];       // [Ip, Ig] from previous sample
   private _saturationDepth = 0;
   private _sagVpp = 0;             // plate supply (modified by sag model)
   private sagVscreen = 0;         // screen/second filter cap voltage
   private dcPlateVoltage = 1;     // DC plate voltage for normalization
   
-  // Dynamic Miller Capacitance LPF state
-  private millerZ1 = 0;
+  // Physical constants
   private static readonly C_ga = 1.7e-12; // 12AX7 grid-to-anode capacitance (1.7pF)
-  private static readonly C_gk = 1.6e-12; // 12AX7 grid-to-cathode capacitance (1.6pF)
   private static readonly R_source = 68e3; // Typical guitar/pedal source impedance (68k)
-
 
   // Output load resistance (next stage grid input impedance)
   private static readonly RLOAD = 1e6;
 
-  // Power supply sag parameters — per design doc: R_OUT=500-1000Ω, C1=47µF.
-  // τ1 = R_OUT × C1 = 750 × 47µF = 35ms (fast transient response).
-  private static readonly SAG_R_OUT = 750;         // supply output impedance
+  // Power supply sag parameters (Sag v2.0 Physical Rectifier)
+  private static readonly SAG_MAINS_FREQ = 60;     // AC Mains frequency (Hz)
+  private static readonly SAG_R_SEC = 150;         // Transformer secondary resistance (ohms)
+  private static readonly SAG_K_RECT = 2e-4;       // Rectifier tube perveance (Child-Langmuir)
   private static readonly SAG_R_FILTER = 4700;     // inter-stage filter R
   private static readonly SAG_C1 = 47e-6;          // first filter cap
   private static readonly SAG_C2 = 22e-6;          // second filter cap
   private static readonly SAG_R_BLEEDER = 220e3;   // bleeder resistor
 
-  // Peak-tracking envelope for plate current (drives sag model)
-  private sagIpEnvelope = 0;
-  private sagAttackCoeff = 0;   // ~1ms attack
-  private sagReleaseCoeff = 0;  // ~100ms release
+  private acPhase = 0;            // Phase of the AC mains
 
   // State-space matrices (precomputed from circuit topology + trapezoidal rule)
   // v_nl = Hd*x + Kd_vin*u + Kd_vpp*Vpp + Ld*i_nl
-  private Hd = new Float64Array(6);      // 2x3 row-major
+  private Hd = new Float64Array(8);      // 2x4 row-major
   private Kd_vin = new Float64Array(2);  // 2x1
   private Kd_vpp = new Float64Array(2);  // 2x1
   private Ld = new Float64Array(4);      // 2x2 row-major
-  // x_next = diag(Ad)*x + Bd_vin*u + Bd_vpp*Vpp + Cd*i_nl
-  private Ad = new Float64Array(3);      // diagonal
-  private Bd_vin = new Float64Array(3);  // 3x1
-  private Bd_vpp = new Float64Array(3);  // 3x1
-  private Cd = new Float64Array(6);      // 3x2 row-major
+  // x_next = Ad*x + Bd_vin*u + Bd_vpp*Vpp + Cd*i_nl
+  private Ad = new Float64Array(16);     // 4x4 row-major
+  private Bd_vin = new Float64Array(4);  // 4x1
+  private Bd_vpp = new Float64Array(4);  // 4x1
+  private Cd = new Float64Array(8);      // 4x2 row-major
   // y = Dd*x + Ed_vpp*Vpp + Fd*i_nl
-  private Dd = new Float64Array(3);      // 1x3
+  private Dd = new Float64Array(4);      // 1x4
   private Ed_vpp = 0;
   private Fd = new Float64Array(2);      // 1x2
 
@@ -171,9 +175,6 @@ export class AmplifierModel {
     this.fs = fs;
 
     if (mode === 'tube') {
-      const T = 1 / fs;
-      this.sagAttackCoeff = 1 - Math.exp(-T / 0.001);
-      this.sagReleaseCoeff = 1 - Math.exp(-T / 0.100);
       this.initStateSpace();
       this.solveDCOperatingPoint();
     }
@@ -186,7 +187,7 @@ export class AmplifierModel {
 
   /**
    * Update plate supply voltage in-place without rebuilding the model.
-   * The sag integrator drifts towards the new Vpp over ~35ms (physical settling),
+   * The sag integrator drifts towards the new Vpp naturally via the AC mains cycle,
    * and the output normalization is updated proportionally.
    */
   setVpp(vpp: number): void {
@@ -234,18 +235,8 @@ export class AmplifierModel {
   /**
    * Derive discrete state-space matrices from circuit topology.
    *
-   * Circuit: common-cathode 12AX7 triode stage.
-   *   Input --[Cc_in]-- grid --[Rg]-- GND
-   *   Vpp --[Rp]-- plate --(triode)-- cathode --[Rk||Ck]-- GND
-   *   plate --[Cc_out]-- output --[Rl]-- GND
-   *
-   * Trapezoidal rule replaces each capacitor C with companion resistance
-   * Rc = T/(2C) in series with history voltage source (the state variable).
-   *
-   * KCL at 4 nodes (grid, plate, cathode, output) solved symbolically
-   * yields closed-form matrices relating state x, input Vin, supply Vpp,
-   * and nonlinear tube currents [Ip, Ig] to port voltages, state update,
-   * and output.
+   * Circuit: common-cathode 12AX7 triode stage, 4-node native matrix.
+   * C_ga (Miller capacitance) is fully embedded into the KCL equations.
    */
   private initStateSpace(): void {
     const T = 1 / this.fs;
@@ -256,55 +247,135 @@ export class AmplifierModel {
     const Rc1 = T / (2 * Cc_in);
     const Rc2 = T / (2 * Cc_out);
     const Rc3 = T / (2 * Ck);
+    const Rc4 = T / (2 * AmplifierModel.C_ga);
 
-    // Node conductance sums
-    const G1 = 1 / Rc1 + 1 / Rg;
-    const G2 = 1 / Rp + 1 / (Rc2 + Rl);
+    const R_in = Rc1 + AmplifierModel.R_source;
+
+    // Node conductance sums for the 2x2 grid-plate system
+    const G11 = 1 / R_in + 1 / Rg + 1 / Rc4;
+    const G22 = 1 / Rp + 1 / (Rc2 + Rl) + 1 / Rc4;
+    const G12 = -1 / Rc4;
+
+    const detG = G11 * G22 - G12 * G12;
+    const invG11 = G22 / detG;
+    const invG22 = G11 / detG;
+    const invG12 = -G12 / detG;
+
     const G3 = 1 / Rk + 1 / Rc3;
 
-    // Node voltage coefficients:
-    //   V1 = a1*Vin - b1*x1 - c1*Ig
-    //   V2 = a2*Vpp + b2*x2 - c2*Ip
-    //   V3 = a3*(Ip+Ig) + b3*x3
-    //   V4 = rl_frac*(V2 - x2)
-    const a1 = 1 / (Rc1 * G1);
-    const b1 = a1;
-    const c1 = 1 / G1;
-    const a2 = 1 / (Rp * G2);
-    const b2 = 1 / ((Rc2 + Rl) * G2);
-    const c2 = 1 / G2;
-    const a3 = 1 / G3;
-    const b3 = 1 / (Rc3 * G3);
-    const rl_frac = Rl / (Rc2 + Rl);
-    const rc_frac = Rc2 / (Rc2 + Rl);
+    // V1 coefficients (Grid)
+    const c_V1_x1 = invG11 / R_in;
+    const c_V1_x2 = invG12 / (Rc2 + Rl);
+    const c_V1_x3 = 0;
+    const c_V1_x4 = (invG11 - invG12) / Rc4;
+    const c_V1_vin = invG11 / R_in;
+    const c_V1_vpp = invG12 / Rp;
+    const c_V1_Ip = -invG12;
+    const c_V1_Ig = -invG11;
+
+    // V2 coefficients (Plate)
+    const c_V2_x1 = invG12 / R_in;
+    const c_V2_x2 = invG22 / (Rc2 + Rl);
+    const c_V2_x3 = 0;
+    const c_V2_x4 = (invG12 - invG22) / Rc4;
+    const c_V2_vin = invG12 / R_in;
+    const c_V2_vpp = invG22 / Rp;
+    const c_V2_Ip = -invG22;
+    const c_V2_Ig = -invG12;
+
+    // V3 coefficients (Cathode)
+    const c_V3_x1 = 0;
+    const c_V3_x2 = 0;
+    const c_V3_x3 = 1 / (Rc3 * G3);
+    const c_V3_x4 = 0;
+    const c_V3_vin = 0;
+    const c_V3_vpp = 0;
+    const c_V3_Ip = 1 / G3;
+    const c_V3_Ig = 1 / G3;
 
     // v_nl = Hd*x + Kd_vin*Vin + Kd_vpp*Vpp + Ld*i_nl
-    // Vpk = V2 - V3, Vgk = V1 - V3
-    this.Hd[0] = 0;     this.Hd[1] = b2;    this.Hd[2] = -b3;   // Vpk
-    this.Hd[3] = -b1;   this.Hd[4] = 0;     this.Hd[5] = -b3;   // Vgk
+    // Vpk = V2 - V3
+    this.Hd[0] = c_V2_x1 - c_V3_x1;
+    this.Hd[1] = c_V2_x2 - c_V3_x2;
+    this.Hd[2] = c_V2_x3 - c_V3_x3;
+    this.Hd[3] = c_V2_x4 - c_V3_x4;
+    // Vgk = V1 - V3
+    this.Hd[4] = c_V1_x1 - c_V3_x1;
+    this.Hd[5] = c_V1_x2 - c_V3_x2;
+    this.Hd[6] = c_V1_x3 - c_V3_x3;
+    this.Hd[7] = c_V1_x4 - c_V3_x4;
 
-    this.Kd_vin[0] = 0;  this.Kd_vin[1] = a1;
-    this.Kd_vpp[0] = a2; this.Kd_vpp[1] = 0;
+    this.Kd_vin[0] = c_V2_vin - c_V3_vin;
+    this.Kd_vin[1] = c_V1_vin - c_V3_vin;
 
-    this.Ld[0] = -(c2 + a3); this.Ld[1] = -a3;
-    this.Ld[2] = -a3;        this.Ld[3] = -(c1 + a3);
+    this.Kd_vpp[0] = c_V2_vpp - c_V3_vpp;
+    this.Kd_vpp[1] = c_V1_vpp - c_V3_vpp;
+
+    this.Ld[0] = c_V2_Ip - c_V3_Ip;
+    this.Ld[1] = c_V2_Ig - c_V3_Ig;
+    this.Ld[2] = c_V1_Ip - c_V3_Ip;
+    this.Ld[3] = c_V1_Ig - c_V3_Ig;
+
+    // State update fractions
+    const rc1_frac = Rc1 / R_in;
+    const rs_frac = AmplifierModel.R_source / R_in;
+    const rc_frac = Rc2 / (Rc2 + Rl);
+    const rl_frac = Rl / (Rc2 + Rl);
 
     // x_next = Ad*x + Bd_vin*Vin + Bd_vpp*Vpp + Cd*i_nl
-    this.Ad[0] = 2 * b1 - 1;
-    this.Ad[1] = 2 * rc_frac * b2 + 2 * rl_frac - 1;
-    this.Ad[2] = 2 * b3 - 1;
+    // x1_next
+    this.Ad[0] = 2 * rc1_frac * c_V1_x1 + (2 * rs_frac - 1);
+    this.Ad[1] = 2 * rc1_frac * c_V1_x2;
+    this.Ad[2] = 2 * rc1_frac * c_V1_x3;
+    this.Ad[3] = 2 * rc1_frac * c_V1_x4;
 
-    this.Bd_vin[0] = 2 - 2 * a1; this.Bd_vin[1] = 0; this.Bd_vin[2] = 0;
-    this.Bd_vpp[0] = 0; this.Bd_vpp[1] = 2 * rc_frac * a2; this.Bd_vpp[2] = 0;
+    // x2_next
+    this.Ad[4] = 2 * rc_frac * c_V2_x1;
+    this.Ad[5] = 2 * rc_frac * c_V2_x2 + (2 * rl_frac - 1);
+    this.Ad[6] = 2 * rc_frac * c_V2_x3;
+    this.Ad[7] = 2 * rc_frac * c_V2_x4;
 
-    this.Cd[0] = 0;                this.Cd[1] = 2 * c1;
-    this.Cd[2] = -2 * rc_frac * c2; this.Cd[3] = 0;
-    this.Cd[4] = 2 * a3;           this.Cd[5] = 2 * a3;
+    // x3_next
+    this.Ad[8] = 2 * c_V3_x1;
+    this.Ad[9] = 2 * c_V3_x2;
+    this.Ad[10] = 2 * c_V3_x3 - 1;
+    this.Ad[11] = 2 * c_V3_x4;
 
-    // y = Dd*x + Ed_vpp*Vpp + Fd*i_nl  (Ed_vin = 0)
-    this.Dd[0] = 0; this.Dd[1] = rl_frac * (b2 - 1); this.Dd[2] = 0;
-    this.Ed_vpp = rl_frac * a2;
-    this.Fd[0] = -rl_frac * c2; this.Fd[1] = 0;
+    // x4_next
+    this.Ad[12] = 2 * c_V1_x1 - 2 * c_V2_x1;
+    this.Ad[13] = 2 * c_V1_x2 - 2 * c_V2_x2;
+    this.Ad[14] = 2 * c_V1_x3 - 2 * c_V2_x3;
+    this.Ad[15] = 2 * c_V1_x4 - 2 * c_V2_x4 - 1;
+
+    this.Bd_vin[0] = 2 * rc1_frac * c_V1_vin - 2 * rc1_frac;
+    this.Bd_vin[1] = 2 * rc_frac * c_V2_vin;
+    this.Bd_vin[2] = 2 * c_V3_vin;
+    this.Bd_vin[3] = 2 * c_V1_vin - 2 * c_V2_vin;
+
+    this.Bd_vpp[0] = 2 * rc1_frac * c_V1_vpp;
+    this.Bd_vpp[1] = 2 * rc_frac * c_V2_vpp;
+    this.Bd_vpp[2] = 2 * c_V3_vpp;
+    this.Bd_vpp[3] = 2 * c_V1_vpp - 2 * c_V2_vpp;
+
+    this.Cd[0] = 2 * rc1_frac * c_V1_Ip;
+    this.Cd[1] = 2 * rc1_frac * c_V1_Ig;
+    this.Cd[2] = 2 * rc_frac * c_V2_Ip;
+    this.Cd[3] = 2 * rc_frac * c_V2_Ig;
+    this.Cd[4] = 2 * c_V3_Ip;
+    this.Cd[5] = 2 * c_V3_Ig;
+    this.Cd[6] = 2 * c_V1_Ip - 2 * c_V2_Ip;
+    this.Cd[7] = 2 * c_V1_Ig - 2 * c_V2_Ig;
+
+    // y = Dd*x + Ed_vpp*Vpp + Fd*i_nl
+    this.Dd[0] = c_V2_x1 * rl_frac;
+    this.Dd[1] = c_V2_x2 * rl_frac - rl_frac;
+    this.Dd[2] = c_V2_x3 * rl_frac;
+    this.Dd[3] = c_V2_x4 * rl_frac;
+
+    this.Ed_vpp = c_V2_vpp * rl_frac;
+
+    this.Fd[0] = c_V2_Ip * rl_frac;
+    this.Fd[1] = c_V2_Ig * rl_frac;
   }
 
   // -------------------------------------------------------------------------
@@ -346,39 +417,32 @@ export class AmplifierModel {
     const Ik_dc = Vk / Rk;
     const Ip_dc = Ik_dc - Ig_dc;
     const Vp_dc = Vpp - Ip_dc * Rp;
-    this.dcPlateVoltage = Math.max(1, Vp_dc);
+    this.dcPlateVoltage = Math.max(1, Vp_dc); // Initial guess
 
     // Initialize capacitor states at DC operating point
     this.x[0] = 0;       // V_Cc_in = 0 (no DC across input coupling cap)
     this.x[1] = Vp_dc;   // V_Cc_out = plate voltage (DC blocked at output)
     this.x[2] = Vk;      // V_Ck = cathode voltage
+    this.x[3] = -Vp_dc;  // V_Cga = Vg - Vp = 0 - Vp_dc
 
     this.i_nl_prev[0] = Ip_dc;
     this.i_nl_prev[1] = Ig_dc;
-    this.sagIpEnvelope = Ip_dc;
 
-    // Compute DC steady-state sag voltages:
-    //   dVss/dt=0 → (Vpp-Vss)/R_FILTER = Vss/R_BLEEDER → Vss = Vpp*R_BLEEDER/(R_FILTER+R_BLEEDER)
-    //   dVpp/dt=0 → (Videal-Vpp)/R_OUT = Ip + Vss/R_BLEEDER
-    const Rf = AmplifierModel.SAG_R_FILTER;
-    const Rb = AmplifierModel.SAG_R_BLEEDER;
-    const Ro = AmplifierModel.SAG_R_OUT;
-    // Solve: Vpp_ss = Videal - Ro * (Ip + Vpp_ss/(Rf+Rb))
-    // Vpp_ss * (1 + Ro/(Rf+Rb)) = Videal - Ro*Ip
-    const sagVpp_ss = (Vpp - Ro * Ip_dc) / (1 + Ro / (Rf + Rb));
-    const sagVss_ss = sagVpp_ss * Rb / (Rf + Rb);
-    this._sagVpp = sagVpp_ss;
-    this.sagVscreen = sagVss_ss;
+    // Initialize Sag v2.0 states
+    this._sagVpp = Vpp;
+    this.sagVscreen = Vpp;
+    this.acPhase = 0;
 
-    // Warmup: run the discrete system to its own numerical steady state.
-    // The continuous DC solution has tiny rounding mismatch with the discrete
-    // trapezoidal system — a few hundred samples of silence eliminate the
-    // startup transient.
-    // Sag τ = R_OUT * C1 = 50ms. Need ~5τ (12000 samples at 48kHz)
-    // to settle both the sag model and discrete trapezoidal state.
-    for (let i = 0; i < 12000; i++) {
+    // Warmup: run the discrete system to its own periodic steady state.
+    // 48000 samples = 1 second.
+    for (let i = 0; i < 48000; i++) {
       this.tubeProcess(0);
     }
+
+    // Update normalization based on settled rippling state
+    const settled_Ip = this.i_nl_prev[0];
+    const settled_Vp = this._sagVpp - settled_Ip * Rp;
+    this.dcPlateVoltage = Math.max(1, settled_Vp);
   }
 
   // -------------------------------------------------------------------------
@@ -389,42 +453,19 @@ export class AmplifierModel {
     const x = this.x;
     const Vpp = this._sagVpp;
 
-    // --- Dynamic Miller Capacitance ---
-    // The effective input capacitance of a triode is C_in = C_gk + C_ga * (1 + A)
-    // where A is the voltage gain. Under hard clipping, A drops to 0, so C_in drops,
-    // causing the frequency response to dynamically open up.
-    // Gain A ≈ dIp/dVgk * Rp
-    
-    // Use the Jacobian from the previous sample to estimate instantaneous gain
-    const J_prev = cohenHelieJacobian(
-      this.Hd[1] * x[1] + this.Hd[2] * x[2] + this.Kd_vpp[0] * Vpp + this.Ld[0] * this.i_nl_prev[0] + this.Ld[1] * this.i_nl_prev[1],
-      this.Hd[3] * x[0] + this.Hd[5] * x[2] + this.Kd_vin[1] * u + this.Ld[2] * this.i_nl_prev[0] + this.Ld[3] * this.i_nl_prev[1]
-    );
-    const A = Math.max(0, J_prev[1] * this.circuitParams.Rp); 
-    const C_in = AmplifierModel.C_gk + AmplifierModel.C_ga * (1 + A);
-    
-    // First-order LPF corner frequency: fc = 1 / (2 * pi * R_source * C_in)
-    // Bilinear transform coefficient:
-    const cutoff = 1 / (2 * Math.PI * AmplifierModel.R_source * C_in);
-    const wc = 2 * Math.PI * cutoff;
-    const alpha = (wc * (1 / this.fs)) / (2 + wc * (1 / this.fs));
-    
-    // Apply dynamic LPF to input signal u
-    const u_filtered = this.millerZ1 + alpha * (u - this.millerZ1);
-    this.millerZ1 = u_filtered + alpha * (u - this.millerZ1);
-    const u_miller = u_filtered;
-
     // Newton-Raphson: solve for nonlinear tube currents [Ip, Ig]
     let Ip = this.i_nl_prev[0];
     let Ig = this.i_nl_prev[1];
 
     for (let iter = 0; iter < 8; iter++) {
       // Tube port voltages: v_nl = Hd*x + Kd_vin*u + Kd_vpp*Vpp + Ld*i_nl
-      const Vpk = this.Hd[1] * x[1] + this.Hd[2] * x[2]
+      const Vpk = this.Hd[0] * x[0] + this.Hd[1] * x[1] + this.Hd[2] * x[2] + this.Hd[3] * x[3]
                 + this.Kd_vpp[0] * Vpp
+                + this.Kd_vin[0] * u
                 + this.Ld[0] * Ip + this.Ld[1] * Ig;
-      const Vgk = this.Hd[3] * x[0] + this.Hd[5] * x[2]
-                + this.Kd_vin[1] * u_miller
+      const Vgk = this.Hd[4] * x[0] + this.Hd[5] * x[1] + this.Hd[6] * x[2] + this.Hd[7] * x[3]
+                + this.Kd_vpp[1] * Vpp
+                + this.Kd_vin[1] * u
                 + this.Ld[2] * Ip + this.Ld[3] * Ig;
 
       // Evaluate tube model at current port voltages
@@ -465,28 +506,23 @@ export class AmplifierModel {
     this._saturationDepth = Math.max(0, Math.min(1, 1 - Vp / this.dcPlateVoltage));
 
     // Output: y = Dd*x + Ed_vpp*Vpp + Fd*i_nl
-    const y = this.Dd[1] * x[1]
+    const y = this.Dd[0] * x[0] + this.Dd[1] * x[1] + this.Dd[2] * x[2] + this.Dd[3] * x[3]
             + this.Ed_vpp * Vpp
-            + this.Fd[0] * Ip;
+            + this.Fd[0] * Ip + this.Fd[1] * Ig;
 
     // State update: x_next = Ad*x + Bd_vin*u + Bd_vpp*Vpp + Cd*i_nl
-    const x0 = this.Ad[0] * x[0] + this.Bd_vin[0] * u_miller + this.Cd[1] * Ig;
-    const x1 = this.Ad[1] * x[1] + this.Bd_vpp[1] * Vpp + this.Cd[2] * Ip;
-    const x2 = this.Ad[2] * x[2] + this.Cd[4] * Ip + this.Cd[5] * Ig;
-    this.x[0] = x0;
-    this.x[1] = x1;
-    this.x[2] = x2;
+    const x0_next = this.Ad[0] * x[0] + this.Ad[1] * x[1] + this.Ad[2] * x[2] + this.Ad[3] * x[3] + this.Bd_vin[0] * u + this.Bd_vpp[0] * Vpp + this.Cd[0] * Ip + this.Cd[1] * Ig;
+    const x1_next = this.Ad[4] * x[0] + this.Ad[5] * x[1] + this.Ad[6] * x[2] + this.Ad[7] * x[3] + this.Bd_vin[1] * u + this.Bd_vpp[1] * Vpp + this.Cd[2] * Ip + this.Cd[3] * Ig;
+    const x2_next = this.Ad[8] * x[0] + this.Ad[9] * x[1] + this.Ad[10] * x[2] + this.Ad[11] * x[3] + this.Bd_vin[2] * u + this.Bd_vpp[2] * Vpp + this.Cd[4] * Ip + this.Cd[5] * Ig;
+    const x3_next = this.Ad[12] * x[0] + this.Ad[13] * x[1] + this.Ad[14] * x[2] + this.Ad[15] * x[3] + this.Bd_vin[3] * u + this.Bd_vpp[3] * Vpp + this.Cd[6] * Ip + this.Cd[7] * Ig;
 
-    // Peak-track plate current for sag model (fast attack, slow release).
-    // Cathode-biased preamp tubes don't increase average Ip much under
-    // overdrive (bias shift effect), but peak Ip increases significantly.
-    // The envelope captures this peak behavior for audible sag.
-    if (Ip > this.sagIpEnvelope) {
-      this.sagIpEnvelope += this.sagAttackCoeff * (Ip - this.sagIpEnvelope);
-    } else {
-      this.sagIpEnvelope += this.sagReleaseCoeff * (Ip - this.sagIpEnvelope);
-    }
-    this.updateSag(this.sagIpEnvelope);
+    this.x[0] = x0_next;
+    this.x[1] = x1_next;
+    this.x[2] = x2_next;
+    this.x[3] = x3_next;
+
+    // Update power supply sag via physical AC mains + rectifier model
+    this.updateSag(Ip);
 
     // Normalize output: raw y is in volts, scale to ~[-1,1]
     return y / this.dcPlateVoltage;
@@ -502,16 +538,42 @@ export class AmplifierModel {
     const Vss = this.sagVscreen;
     const Videal = this.circuitParams.Vpp;
 
-    // Rectifier current: (Videal - Vpp) / R_OUT models the supply recharging
-    // the filter cap. Rectifier diodes block reverse current, so Irect >= 0.
-    const Irect = Math.max(0, (Videal - Vpp) / AmplifierModel.SAG_R_OUT);
-    const dVpp = (Irect - Ip - (Vpp - Vss) / AmplifierModel.SAG_R_FILTER)
-                 / AmplifierModel.SAG_C1;
-    const dVss = ((Vpp - Vss) / AmplifierModel.SAG_R_FILTER - Vss / AmplifierModel.SAG_R_BLEEDER)
-                 / AmplifierModel.SAG_C2;
+    // Unloaded DC is Videal, so peak AC secondary is Videal
+    const V_sec_peak = Videal; 
+
+    // Advance AC mains phase (60Hz)
+    this.acPhase += 2 * Math.PI * AmplifierModel.SAG_MAINS_FREQ * T;
+    if (this.acPhase > 2 * Math.PI) {
+      this.acPhase -= 2 * Math.PI;
+    }
+
+    // Full-wave rectified AC voltage
+    const Vac = V_sec_peak * Math.abs(Math.sin(this.acPhase));
+
+    let Irect = 0;
+    if (Vac > Vpp) {
+      // 1D Newton solver for physical rectifier diode equation
+      // f(I) = I * R_sec + (I / K_rect)^(2/3) - (Vac - Vpp) = 0
+      const Vdiff = Vac - Vpp;
+      let I = Vdiff / AmplifierModel.SAG_R_SEC; // Initial guess
+      for (let i = 0; i < 5; i++) {
+        if (I <= 1e-9) { I = 0; break; }
+        const tube_drop = Math.pow(I / AmplifierModel.SAG_K_RECT, 2 / 3);
+        const f = I * AmplifierModel.SAG_R_SEC + tube_drop - Vdiff;
+        const df = AmplifierModel.SAG_R_SEC + (2 / 3) * tube_drop / I;
+        const dI = f / df;
+        I = Math.max(1e-9, I - dI);
+        if (Math.abs(dI) < 1e-6) break;
+      }
+      Irect = I > 1e-9 ? I : 0;
+    }
+
+    const I_filter = (Vpp - Vss) / AmplifierModel.SAG_R_FILTER;
+
+    const dVpp = (Irect - Ip - I_filter) / AmplifierModel.SAG_C1;
+    const dVss = (I_filter - Vss / AmplifierModel.SAG_R_BLEEDER) / AmplifierModel.SAG_C2;
 
     this._sagVpp = Math.max(0, Vpp + T * dVpp);
-    // sagVscreen cannot exceed the main supply — clamp to [0, _sagVpp].
     this.sagVscreen = Math.max(0, Math.min(this._sagVpp, Vss + T * dVss));
   }
 
