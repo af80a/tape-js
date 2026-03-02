@@ -4,7 +4,7 @@ import { Oversampler } from '../oversampling';
 describe('Oversampler', () => {
   describe('upsample by factor 2', () => {
     it('doubles the output length', () => {
-      const os = new Oversampler(2);
+      const os = new Oversampler(2, 64);
       const input = new Float32Array(64);
       // Fill with a simple signal
       for (let i = 0; i < input.length; i++) {
@@ -20,7 +20,7 @@ describe('Oversampler', () => {
   describe('round-trip recovery', () => {
     it('recovers the original signal shape for low-frequency content', () => {
       const factor = 2;
-      const os = new Oversampler(factor);
+      const os = new Oversampler(factor, 256);
       const len = 256;
       const input = new Float32Array(len);
 

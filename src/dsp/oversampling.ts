@@ -22,10 +22,17 @@ export class Oversampler {
   /** Delay-line state for the downsample FIR. */
   private downsampleState: Float64Array;
 
+  /** Pre-allocated scratch buffers for zero-allocation processing. */
+  private upsampleStuffed: Float32Array;
+  private upsampleOutput: Float32Array;
+  private downsampleFiltered: Float32Array;
+  private downsampleOutput: Float32Array;
+
   /**
    * @param factor  Oversampling factor: 1 (bypass), 2, or 4.
+   * @param maxInputLength  Maximum input length to pre-allocate for (default 1).
    */
-  constructor(factor: number) {
+  constructor(factor: number, maxInputLength = 1) {
     this.factor = factor;
 
     if (factor <= 1) {
@@ -34,6 +41,10 @@ export class Oversampler {
       this.downsampleKernel = new Float64Array(0);
       this.upsampleState = new Float64Array(0);
       this.downsampleState = new Float64Array(0);
+      this.upsampleStuffed = new Float32Array(0);
+      this.upsampleOutput = new Float32Array(0);
+      this.downsampleFiltered = new Float32Array(0);
+      this.downsampleOutput = new Float32Array(0);
       return;
     }
 
@@ -88,6 +99,12 @@ export class Oversampler {
 
     this.upsampleState = new Float64Array(N);
     this.downsampleState = new Float64Array(N);
+
+    // Pre-allocate scratch buffers for zero-allocation processing
+    this.upsampleStuffed = new Float32Array(maxInputLength * factor);
+    this.upsampleOutput = new Float32Array(maxInputLength * factor);
+    this.downsampleFiltered = new Float32Array(maxInputLength * factor);
+    this.downsampleOutput = new Float32Array(maxInputLength);
   }
 
   /**
@@ -104,16 +121,18 @@ export class Oversampler {
     }
 
     const factor = this.factor;
-    const stuffed = new Float32Array(input.length * factor);
+    const len = input.length * factor;
+    const stuffed = this.upsampleStuffed;
+    const output = this.upsampleOutput;
 
     // Zero-stuff: place each input sample at every `factor`th position.
+    stuffed.fill(0, 0, len);
     for (let i = 0; i < input.length; i++) {
       stuffed[i * factor] = input[i];
     }
 
     // Apply FIR lowpass to the zero-stuffed signal.
-    const output = new Float32Array(stuffed.length);
-    this.applyFir(stuffed, output, this.upsampleState, this.upsampleKernel);
+    this.applyFir(stuffed, output, this.upsampleState, this.upsampleKernel, len);
 
     return output;
   }
@@ -134,12 +153,12 @@ export class Oversampler {
     const factor = this.factor;
 
     // Apply FIR lowpass (anti-alias) before decimation.
-    const filtered = new Float32Array(input.length);
-    this.applyFir(input, filtered, this.downsampleState, this.downsampleKernel);
+    const filtered = this.downsampleFiltered;
+    this.applyFir(input, filtered, this.downsampleState, this.downsampleKernel, input.length);
 
     // Decimate: take every `factor`th sample.
     const outLen = Math.floor(input.length / factor);
-    const output = new Float32Array(outLen);
+    const output = this.downsampleOutput;
     for (let i = 0; i < outLen; i++) {
       output[i] = filtered[i * factor];
     }
@@ -170,10 +189,12 @@ export class Oversampler {
     output: Float32Array,
     state: Float64Array,
     kernel: Float64Array,
+    length?: number,
   ): void {
     const N = kernel.length;
+    const len = length ?? input.length;
 
-    for (let i = 0; i < input.length; i++) {
+    for (let i = 0; i < len; i++) {
       // Shift delay line right
       for (let j = N - 1; j > 0; j--) {
         state[j] = state[j - 1];

@@ -209,6 +209,78 @@ export function designHighShelf(
 }
 
 // ---------------------------------------------------------------------------
+// First-order filter design (for tape EQ time constants)
+// ---------------------------------------------------------------------------
+
+/**
+ * Design a first-order section from NAB/IEC time constants via bilinear transform.
+ *
+ * Implements: H(s) = (1 + s*T_num) / (1 + s*T_den)
+ *
+ * Stored in BiquadCoeffs with b2=0, a2=0 so the existing BiquadFilter
+ * class can run it (y[n] = b0*x[n] + b1*x[n-1] - a1*y[n-1]).
+ *
+ * @param tNum  Numerator time constant in seconds
+ * @param tDen  Denominator time constant in seconds
+ * @param fs    Sample rate in Hz
+ */
+export function designFirstOrderSection(
+  tNum: number,
+  tDen: number,
+  fs: number,
+): BiquadCoeffs {
+  // Bilinear transform: s → (2fs)(1 - z⁻¹)/(1 + z⁻¹)
+  const cn = 2 * fs * tNum;
+  const cd = 2 * fs * tDen;
+
+  return {
+    b0: (1 + cn) / (1 + cd),
+    b1: (1 - cn) / (1 + cd),
+    b2: 0,
+    a1: (1 - cd) / (1 + cd),
+    a2: 0,
+  };
+}
+
+/**
+ * Design a first-order lowpass from a single time constant.
+ *
+ * Implements: H(s) = 1 / (1 + s*T)
+ *
+ * @param t   Time constant in seconds
+ * @param fs  Sample rate in Hz
+ */
+export function designFirstOrderLP(t: number, fs: number): BiquadCoeffs {
+  const c = 2 * fs * t;
+  return {
+    b0: 1 / (1 + c),
+    b1: 1 / (1 + c),
+    b2: 0,
+    a1: (1 - c) / (1 + c),
+    a2: 0,
+  };
+}
+
+/**
+ * Design a first-order highpass from a single time constant.
+ *
+ * Implements: H(s) = s*T / (1 + s*T)
+ *
+ * @param t   Time constant in seconds
+ * @param fs  Sample rate in Hz
+ */
+export function designFirstOrderHP(t: number, fs: number): BiquadCoeffs {
+  const c = 2 * fs * t;
+  return {
+    b0: c / (1 + c),
+    b1: -c / (1 + c),
+    b2: 0,
+    a1: (1 - c) / (1 + c),
+    a2: 0,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Internal helper
 // ---------------------------------------------------------------------------
 

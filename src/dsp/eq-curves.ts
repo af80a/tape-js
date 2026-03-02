@@ -2,10 +2,26 @@
  * Tape equalization curves for NAB and IEC standards.
  *
  * Implements pre-emphasis (record) and de-emphasis (playback) EQ
- * using standard time constants for different tape speeds.
+ * using first-order pole/zero filters derived from the standard
+ * time constants via bilinear transform.
+ *
+ * NAB: H(s) = (1 + s*T1) / (1 + s*T2)   — two time constants
+ *   Record (pre-emphasis): T_num = T1, T_den = T2 → boosts HF
+ *   Playback (de-emphasis): T_num = T2, T_den = T1 → cuts HF
+ *
+ * IEC/CCIR: Only one time constant T2; no LF shelf.
+ *   Playback: H(s) = 1 / (1 + s*T2)  — first-order LP
+ *   Record:   H(s) = (1 + s*T2) — first-order HP (with HF limiting pole)
+ *
+ * The transfer function is normalized at 1 kHz for unity gain at
+ * the reference frequency, keeping signal levels practical in
+ * the processing chain.
  */
 
-import { BiquadFilter, designHighShelf, designLowShelf } from './biquad';
+import {
+  BiquadFilter,
+  designFirstOrderSection,
+} from './biquad';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -26,8 +42,10 @@ export type EQMode = 'record' | 'playback';
 
 /**
  * Time constants in microseconds for each standard/speed combination.
- * T1 = low-frequency time constant (null means no LF EQ, as in IEC).
+ * T1 = low-frequency time constant (null means no LF shelf, as in IEC).
  * T2 = high-frequency time constant.
+ *
+ * Sources: IEC 60094, NAB standard, IASA TC-04 §5.4.10
  */
 interface TimeConstants {
   T1: number | null; // LF time constant in µs
@@ -48,43 +66,24 @@ const TIME_CONSTANTS: Record<EQStandard, Record<TapeSpeed, TimeConstants>> = {
 };
 
 // ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Convert a time constant in microseconds to a corner frequency in Hz.
- * f = 1e6 / (2 * pi * T_µs)
- */
-function cornerFrequency(timeConstantUs: number): number {
-  return 1e6 / (2 * Math.PI * timeConstantUs);
-}
-
-/**
- * Clamp a frequency to at most 0.45 * sampleRate to stay safely
- * below Nyquist and avoid numerical instability in biquad design.
- */
-function clampFrequency(freq: number, sampleRate: number): number {
-  return Math.min(freq, 0.45 * sampleRate);
-}
-
-// ---------------------------------------------------------------------------
 // TapeEQ class
 // ---------------------------------------------------------------------------
 
-/** HF and LF shelf gains used for record/playback EQ. */
-const HF_GAIN_DB = 10;
-const LF_GAIN_DB = 6;
-const Q = 0.707;
-
 /**
- * Tape equalization processor.
+ * Tape equalization processor using first-order IIR filters.
  *
- * Applies high-shelf (and optionally low-shelf) filtering based on
- * the NAB or IEC standard time constants for the chosen tape speed.
+ * For NAB (two time constants): a single first-order section implements
+ * H(s) = (1 + s*T_num)/(1 + s*T_den) via bilinear transform, giving
+ * one pole, one zero, and a continuous 6 dB/oct transition.
+ *
+ * For IEC (one time constant): a first-order LP (playback) or HP (record)
+ * implements the single time constant, with unity DC or HF gain.
+ *
+ * Both are normalized at 1 kHz for practical signal levels.
  */
 export class TapeEQ {
-  private hfFilter: BiquadFilter;
-  private lfFilter: BiquadFilter | null;
+  private filter: BiquadFilter;
+  private normGain: number;
 
   /**
    * @param sampleRate Audio sample rate in Hz
@@ -100,40 +99,52 @@ export class TapeEQ {
   ) {
     const tc = TIME_CONSTANTS[standard][speed];
 
-    // HF shelf -----------------------------------------------------------
-    const hfCorner = clampFrequency(cornerFrequency(tc.T2), sampleRate);
-    const hfGain = mode === 'record' ? HF_GAIN_DB : -HF_GAIN_DB;
-    const hfCoeffs = designHighShelf(hfCorner, sampleRate, hfGain, Q);
-    this.hfFilter = new BiquadFilter(hfCoeffs);
+    // Convert µs to seconds
+    const T2 = tc.T2 * 1e-6;
 
-    // LF shelf (NAB only) ------------------------------------------------
-    if (tc.T1 !== null) {
-      const lfCorner = clampFrequency(cornerFrequency(tc.T1), sampleRate);
-      const lfGain = mode === 'record' ? -LF_GAIN_DB : LF_GAIN_DB;
-      const lfCoeffs = designLowShelf(lfCorner, sampleRate, lfGain, Q);
-      this.lfFilter = new BiquadFilter(lfCoeffs);
+    // For IEC (T1 = null), we need a limiting time constant to make the
+    // record transfer function proper (realizable). Both record and playback
+    // use the same T_lim so they perfectly complement each other.
+    const tLim = 1 / (2 * Math.PI * 0.45 * sampleRate);
+
+    // Determine numerator and denominator time constants.
+    // NAB: H(s) = (1 + s*T_num) / (1 + s*T_den)
+    //   Record:   T_num = T1, T_den = T2  (HF boost)
+    //   Playback: T_num = T2, T_den = T1  (HF cut)
+    //
+    // IEC: Only T2 exists. Use tLim as the complementary constant.
+    //   Record:   T_num = T2,   T_den = tLim  (HF boost)
+    //   Playback: T_num = tLim, T_den = T2    (HF cut)
+    const T1 = tc.T1 !== null ? tc.T1 * 1e-6 : tLim;
+
+    let tNum: number;
+    let tDen: number;
+    if (mode === 'record') {
+      tNum = tc.T1 !== null ? T1 : T2;   // NAB: T1, IEC: T2
+      tDen = tc.T1 !== null ? T2 : tLim; // NAB: T2, IEC: tLim
     } else {
-      this.lfFilter = null;
+      tNum = tc.T1 !== null ? T2 : tLim; // NAB: T2, IEC: tLim
+      tDen = tc.T1 !== null ? T1 : T2;   // NAB: T1, IEC: T2
     }
+
+    this.filter = new BiquadFilter(designFirstOrderSection(tNum, tDen, sampleRate));
+
+    // Normalize at 1 kHz: compute analog magnitude and invert
+    const w1k = 2 * Math.PI * 1000;
+    const magSq = (1 + (w1k * tNum) ** 2) / (1 + (w1k * tDen) ** 2);
+    this.normGain = 1 / Math.sqrt(magSq);
   }
 
   /**
-   * Process a single sample through the EQ chain.
-   * Applies HF shelf first, then LF shelf if present.
+   * Process a single sample through the EQ filter.
+   * The normalization gain is applied inline for efficiency.
    */
   process(input: number): number {
-    let output = this.hfFilter.process(input);
-    if (this.lfFilter !== null) {
-      output = this.lfFilter.process(output);
-    }
-    return output;
+    return this.filter.process(input) * this.normGain;
   }
 
-  /** Reset all filter states. */
+  /** Reset filter state. */
   reset(): void {
-    this.hfFilter.reset();
-    if (this.lfFilter !== null) {
-      this.lfFilter.reset();
-    }
+    this.filter.reset();
   }
 }

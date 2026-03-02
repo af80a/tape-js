@@ -59,4 +59,103 @@ describe('TapeEQ', () => {
       }
     });
   });
+
+  describe('first-order shelf slope (6 dB/octave)', () => {
+    it('NAB record HF shelf max slope is bounded at ~6.5 dB/octave', () => {
+      // A first-order shelf has a THEORETICAL maximum slope of exactly
+      // 6 dB/octave (20 dB/decade). We allow 6.5 for numerical margin.
+      // Second-order shelves with Q > ~0.5 can exceed this.
+      const eq = new TapeEQ(sampleRate, 'NAB', 15, 'record');
+
+      // Measure gain at multiple octave-spaced frequencies
+      const freqs = [500, 1000, 2000, 4000, 8000, 16000];
+      const gains: number[] = [];
+      for (const f of freqs) {
+        eq.reset();
+        gains.push(measurePeak(eq, f, sampleRate));
+      }
+
+      // Check slope between consecutive octaves
+      for (let i = 0; i < gains.length - 1; i++) {
+        const slopeDb = 20 * Math.log10(gains[i + 1] / gains[i]);
+        // First-order: max slope ~6 dB/octave. Allow 6.5 for numerical margin.
+        expect(slopeDb).toBeLessThan(6.5);
+      }
+    });
+  });
+
+  describe('first-order time-constant derived gains', () => {
+    it('NAB 15ips record: 50 Hz is >15 dB below 1 kHz (first-order LF rolloff from T1=3180µs)', () => {
+      // With H(s) = (1+sT1)/(1+sT2), T1=3180µs, T2=50µs, normalized at 1kHz:
+      // 50 Hz gain ≈ -22.6 dB. Second-order shelves give only ~-5 dB here.
+      const eq = new TapeEQ(sampleRate, 'NAB', 15, 'record');
+      const peak50 = measurePeak(eq, 50, sampleRate);
+      eq.reset();
+      const peak1k = measurePeak(eq, 1000, sampleRate);
+
+      const diffDb = 20 * Math.log10(peak1k / peak50);
+      expect(diffDb).toBeGreaterThan(15);
+    });
+
+    it('NAB 15ips record: continuous ~6 dB/oct slope from 200 Hz to 1600 Hz', () => {
+      // First-order transfer function has a continuous 6 dB/oct slope in
+      // the transition region between f1 (50 Hz) and f2 (3183 Hz).
+      // Second-order shelves produce a flat plateau between the two shelves.
+      const eq = new TapeEQ(sampleRate, 'NAB', 15, 'record');
+      const freqs = [200, 400, 800, 1600];
+      const peaks: number[] = [];
+      for (const f of freqs) {
+        eq.reset();
+        peaks.push(measurePeak(eq, f, sampleRate));
+      }
+
+      for (let i = 0; i < peaks.length - 1; i++) {
+        const slopeDb = 20 * Math.log10(peaks[i + 1] / peaks[i]);
+        // Each octave should show ~5-7 dB of gain (first-order slope).
+        // Second-order shelves give only ~0.5-3 dB/oct in the plateau region.
+        expect(slopeDb).toBeGreaterThan(4);
+      }
+    });
+  });
+
+  describe('record + playback complementarity', () => {
+    /**
+     * Helper: measure gain of record+playback chain at a given frequency.
+     * Returns gain in dB relative to unity.
+     */
+    function measureChainGainDb(standard: 'NAB' | 'IEC', speed: 15 | 7.5 | 3.75, freq: number): number {
+      const recEq = new TapeEQ(sampleRate, standard, speed, 'record');
+      const pbEq = new TapeEQ(sampleRate, standard, speed, 'playback');
+      const numSamples = 6000;
+      let maxOutput = 0;
+      for (let i = 0; i < numSamples; i++) {
+        const x = Math.sin(2 * Math.PI * freq * i / sampleRate);
+        let y = recEq.process(x);
+        y = pbEq.process(y);
+        if (i >= 3000) maxOutput = Math.max(maxOutput, Math.abs(y));
+      }
+      return 20 * Math.log10(maxOutput);
+    }
+
+    it('NAB record + playback is flat within 0.5 dB across audio band', () => {
+      // If the EQ curves are truly complementary (derived from the same
+      // time constants), record + playback should produce flat response.
+      // This is the key correctness criterion for tape EQ implementation.
+      const testFreqs = [100, 500, 1000, 3000, 5000, 8000, 12000];
+
+      for (const freq of testFreqs) {
+        const gainDb = measureChainGainDb('NAB', 15, freq);
+        expect(Math.abs(gainDb)).toBeLessThan(0.5);
+      }
+    });
+
+    it('IEC record + playback is flat within 0.5 dB across audio band', () => {
+      const testFreqs = [100, 500, 1000, 3000, 5000, 8000, 12000];
+
+      for (const freq of testFreqs) {
+        const gainDb = measureChainGainDb('IEC', 15, freq);
+        expect(Math.abs(gainDb)).toBeLessThan(0.5);
+      }
+    });
+  });
 });

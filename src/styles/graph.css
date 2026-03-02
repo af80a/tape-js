@@ -1,0 +1,204 @@
+/* ==========================================================================
+   Graph View — Node styling for ReactFlow canvas
+   ========================================================================== */
+
+.graph-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.graph-view__canvas {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 14px;
+  border: 1px solid #242a34;
+  background: #080a0f;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.graph-view__canvas .react-flow__background {
+  opacity: 0.36;
+}
+
+.stage-node {
+  background: #11151d;
+  border: 1px solid #252b37;
+  border-radius: 10px;
+  padding: 10px;
+  min-width: 220px;
+  color: #d7dbe3;
+  font-family: Inter, system-ui, -apple-system, sans-serif;
+  box-shadow: 0 7px 16px rgba(0, 0, 0, 0.45);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+}
+
+.stage-node:hover {
+  border-color: #3a424f;
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.56);
+}
+
+.stage-node--bypassed {
+  opacity: 0.5;
+  filter: saturate(0.55);
+  border-style: dashed;
+}
+
+.stage-node__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #232a35;
+}
+
+.stage-node__title {
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  color: #78a7a2;
+  text-transform: uppercase;
+}
+
+.stage-node__bypass {
+  background: #1a1f29;
+  color: #9198a5;
+  border: 1px solid #333a47;
+  border-radius: 4px;
+  padding: 2px 7px;
+  font-size: 9px;
+  font-weight: 700;
+  cursor: pointer;
+  letter-spacing: 0.5px;
+}
+
+.stage-node__bypass:hover {
+  border-color: #5f8f8a;
+}
+
+.stage-node__bypass--active {
+  background: #7a2d33;
+  border-color: #9d3a43;
+  color: #fff;
+}
+
+.stage-node__content {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.stage-node__meter {
+  flex: 0 0 5px;
+  display: flex;
+  align-items: stretch;
+}
+
+.stage-node__body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.stage-node__body .select-container {
+  min-width: unset;
+}
+
+.stage-node__body .select-label {
+  font-size: 9.5px;
+  margin-bottom: 4px;
+}
+
+.stage-node__body select {
+  font-size: 10.5px;
+  padding: 3px 7px;
+}
+
+.stage-node__params {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+}
+
+.stage-node__params .knob-container {
+  width: 60px;
+}
+
+.stage-node__params .knob {
+  width: 40px;
+  height: 40px;
+}
+
+.stage-node__params .knob-indicator {
+  height: 13px;
+  top: 4px;
+  transform-origin: center 16px;
+}
+
+.stage-node__params .knob-label {
+  font-size: 8.5px;
+  margin-bottom: 4px;
+}
+
+.stage-node__params .knob-value {
+  font-size: 9.5px;
+  margin-top: 3px;
+}
+
+/* Mini meter bars */
+.mini-meter {
+  width: 5px;
+  display: flex;
+  align-items: flex-end;
+}
+
+.mini-meter__track {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: #090b10;
+  border-radius: 1px;
+  overflow: hidden;
+}
+
+.mini-meter__fill {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  transition: height 60ms linear;
+  border-radius: 1px;
+}
+
+.mini-meter__peak {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  height: 1px;
+  background: #e9edf3;
+  transition: bottom 60ms linear;
+}
+
+/* ReactFlow handle styling */
+.stage-node .react-flow__handle {
+  width: 7px;
+  height: 7px;
+  background: #5f8f8a;
+  border: 1px solid #1e232d;
+}
+
+@media (max-width: 960px) {
+  .graph-view {
+    gap: 8px;
+  }
+
+  .graph-view__canvas {
+    border-radius: 10px;
+  }
+}

@@ -276,8 +276,10 @@ describe('power supply sag', () => {
       amp.process(1.5 * Math.sin(2 * Math.PI * 100 * i / fs));
     }
 
-    // Supply voltage should have sagged measurably
-    expect(amp.getSagVpp()).toBeLessThan(initialVpp * 0.99);
+    // Supply voltage should have sagged measurably.
+    // With R_OUT=750Ω (design doc), the supply is stiffer than R_OUT=5000Ω,
+    // so sag depth is smaller but response is faster.
+    expect(amp.getSagVpp()).toBeLessThan(initialVpp * 0.999);
   });
 
   it('supply recovers after signal stops', () => {
@@ -300,6 +302,46 @@ describe('power supply sag', () => {
     const initialVpp = new AmplifierModel('tube', 1.0).getSagVpp();
     expect(amp.getSagVpp()).toBeGreaterThan(saggedVpp);
     expect(amp.getSagVpp()).toBeGreaterThan(initialVpp * 0.995);
+  });
+});
+
+describe('sag time constant matches design doc', () => {
+  it('sag responds within ~35ms (not ~50ms)', () => {
+    // Design doc: τ1 = R_OUT(750) × C1(47µF) = 35ms
+    // Old implementation: τ1 = 5000 × 10µF = 50ms
+    // Test: after a sudden burst, measure how quickly Vpp drops.
+    // At time τ, voltage drops to ~63% of its final sag depth.
+    const fs = 48000;
+    const amp = new AmplifierModel('tube', 1.0);
+    amp.setDrive(1.0);
+    const initialVpp = amp.getSagVpp();
+
+    // Drive hard for 200ms (enough for sag to engage)
+    for (let i = 0; i < fs * 0.2; i++) {
+      amp.process(1.5 * Math.sin(2 * Math.PI * 100 * i / fs));
+    }
+
+    const finalVpp = amp.getSagVpp();
+    const sagDepth = initialVpp - finalVpp;
+
+    // Now create a fresh amplifier and measure where it is at exactly 35ms
+    const amp35 = new AmplifierModel('tube', 1.0);
+    amp35.setDrive(1.0);
+    const initial35 = amp35.getSagVpp();
+
+    // Drive hard for exactly 35ms
+    const samples35ms = Math.round(fs * 0.035);
+    for (let i = 0; i < samples35ms; i++) {
+      amp35.process(1.5 * Math.sin(2 * Math.PI * 100 * i / fs));
+    }
+
+    const dropped35 = initial35 - amp35.getSagVpp();
+
+    // At time τ, the drop should be at least 50% of the eventual depth.
+    // With τ=35ms, at 35ms we expect ~63% of depth.
+    // With τ=50ms, at 35ms we'd only get ~50% of depth.
+    // Test that at 35ms we've dropped at least 55% of the full depth.
+    expect(dropped35 / sagDepth).toBeGreaterThan(0.55);
   });
 });
 

@@ -96,6 +96,7 @@ const DEFAULT_CIRCUIT: TubeCircuitParams = {
 export class AmplifierModel {
   private mode: 'tube' | 'transistor';
   private drive: number;
+  private driveRaw: number;
   private circuitParams: TubeCircuitParams;
   private fs: number;
 
@@ -109,13 +110,13 @@ export class AmplifierModel {
   // Output load resistance (next stage grid input impedance)
   private static readonly RLOAD = 1e6;
 
-  // Power supply sag parameters (tuned for audible effect — lumped impedance
-  // representing rectifier + choke + winding resistance of a tube supply)
-  private static readonly SAG_R_OUT = 5000;       // supply output impedance
-  private static readonly SAG_R_FILTER = 4700;    // inter-stage filter R
-  private static readonly SAG_C1 = 10e-6;         // first filter cap
-  private static readonly SAG_C2 = 22e-6;         // second filter cap
-  private static readonly SAG_R_BLEEDER = 220e3;  // bleeder resistor
+  // Power supply sag parameters — per design doc: R_OUT=500-1000Ω, C1=47µF.
+  // τ1 = R_OUT × C1 = 750 × 47µF = 35ms (fast transient response).
+  private static readonly SAG_R_OUT = 750;         // supply output impedance
+  private static readonly SAG_R_FILTER = 4700;     // inter-stage filter R
+  private static readonly SAG_C1 = 47e-6;          // first filter cap
+  private static readonly SAG_C2 = 22e-6;          // second filter cap
+  private static readonly SAG_R_BLEEDER = 220e3;   // bleeder resistor
 
   // Peak-tracking envelope for plate current (drives sag model)
   private sagIpEnvelope = 0;
@@ -145,6 +146,7 @@ export class AmplifierModel {
     fs = 48000,
   ) {
     this.mode = mode;
+    this.driveRaw = drive;
     this.drive = mode === 'tube' ? 0.5 + drive * 4.0 : drive;
     this.circuitParams = circuitParams ?? DEFAULT_CIRCUIT;
     this.fs = fs;
@@ -159,7 +161,13 @@ export class AmplifierModel {
   }
 
   setDrive(v: number): void {
+    this.driveRaw = v;
     this.drive = this.mode === 'tube' ? 0.5 + v * 4.0 : v;
+  }
+
+  /** Raw 0-1 drive value (for preserving drive when recreating for Vpp changes). */
+  getDrive(): number {
+    return this.driveRaw;
   }
 
   /** Current plate supply voltage (for diagnostics/testing). */
@@ -300,7 +308,7 @@ export class AmplifierModel {
     const Ik_dc = Vk / Rk;
     const Ip_dc = Ik_dc - Ig_dc;
     const Vp_dc = Vpp - Ip_dc * Rp;
-    this.dcPlateVoltage = Vp_dc;
+    this.dcPlateVoltage = Math.max(1, Vp_dc);
 
     // Initialize capacitor states at DC operating point
     this.x[0] = 0;       // V_Cc_in = 0 (no DC across input coupling cap)
@@ -435,8 +443,8 @@ export class AmplifierModel {
     const dVss = ((Vpp - Vss) / AmplifierModel.SAG_R_FILTER - Vss / AmplifierModel.SAG_R_BLEEDER)
                  / AmplifierModel.SAG_C2;
 
-    this._sagVpp = Vpp + T * dVpp;
-    this.sagVscreen = Vss + T * dVss;
+    this._sagVpp = Math.max(0, Vpp + T * dVpp);
+    this.sagVscreen = Math.max(0, Vss + T * dVss);
   }
 
   // -------------------------------------------------------------------------
