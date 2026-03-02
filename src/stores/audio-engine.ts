@@ -9,6 +9,17 @@ export interface StageMeterLevels {
   saturation?: number;
 }
 
+export interface ScopeSnapshot {
+  vuDb: number;
+  gainDelta: number;
+  saturation: number;
+}
+
+export const SCOPE_STAGE_IDS = ['inputXfmr', 'recordAmp', 'hysteresis', 'playbackAmp', 'outputXfmr'] as const;
+export type ScopeStageId = (typeof SCOPE_STAGE_IDS)[number];
+
+export const SCOPE_BUFFER_SIZE = 100; // ~5 seconds at 50ms meter interval
+
 function initStageMeterState(): Record<string, StageMeterLevels> {
   const meters: Record<string, StageMeterLevels> = {};
   for (const id of STAGE_IDS) {
@@ -31,6 +42,8 @@ interface AudioEngineState {
   vuDb: number[];
   peakDb: number[];
   stageMeters: Record<string, StageMeterLevels>;
+  scopeBuffers: Record<ScopeStageId, ScopeSnapshot[]>;
+  scopeBufferIndex: number;
 
   // Actions
   ensureAudioContext: () => Promise<void>;
@@ -64,6 +77,10 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
   vuDb: [-20, -20],
   peakDb: [-20, -20],
   stageMeters: initStageMeterState(),
+  scopeBuffers: Object.fromEntries(
+    SCOPE_STAGE_IDS.map(id => [id, Array.from({ length: SCOPE_BUFFER_SIZE }, () => ({ vuDb: -60, gainDelta: 0, saturation: 0 }))])
+  ) as Record<ScopeStageId, ScopeSnapshot[]>,
+  scopeBufferIndex: 0,
 
   ensureAudioContext: async () => {
     if (get().audioCtx) return;
@@ -156,7 +173,20 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
   },
 
   updateStageMeters: (levels: Record<string, StageMeterLevels>) => {
-    set({ stageMeters: levels });
+    const { scopeBuffers, scopeBufferIndex } = get();
+    const nextIndex = (scopeBufferIndex + 1) % SCOPE_BUFFER_SIZE;
+
+    for (const id of SCOPE_STAGE_IDS) {
+      const stage = levels[id];
+      if (!stage) continue;
+      scopeBuffers[id][nextIndex] = {
+        vuDb: stage.vuDb[1] ?? -60,
+        gainDelta: (stage.vuDb[1] ?? -60) - (stage.vuDb[0] ?? -60),
+        saturation: stage.saturation ?? 0,
+      };
+    }
+
+    set({ stageMeters: levels, scopeBufferIndex: nextIndex });
   },
 
   updateTime: (current: number, duration: number) => {
