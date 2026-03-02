@@ -10,6 +10,7 @@ export type WorkletMessage =
   | { type: 'set-stage-bypass'; stageId: StageId; value: boolean }
   | { type: 'set-stage-variant'; stageId: StageId; value: string }
   | { type: 'set-stage-param'; stageId: StageId; param: string; value: number }
+  | { type: 'clear-param-overrides' }
   | { type: 'dispose' };
 
 /** Messages received FROM the worklet via port.onmessage */
