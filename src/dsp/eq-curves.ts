@@ -76,17 +76,20 @@ const TIME_CONSTANTS: Record<EQStandard, Record<TapeSpeed, TimeConstants>> = {
  * 3. Exact analog magnitude matching via pole/zero blending.
  */
 export class TapeEQ {
-  private normGain: number;
+  private normGain: number = 1;
 
   // Analog Time Constants
   private tNum: number;
   private tDen: number;
+  private readonly tNumStandard: number;
   private readonly tDenStandard: number; // Unmodified T2 pole for color scaling
+  private readonly isIecRecord: boolean;
   private readonly sampleRate: number;
 
   // TPT Filter State
   private s = 0; // State variable (capacitor charge)
   private g = 0; // Pre-warped conductance
+  private hfBlendRatio = 0;
 
   constructor(
     sampleRate: number,
@@ -101,6 +104,8 @@ export class TapeEQ {
     const tLim = 1 / (2 * Math.PI * 0.45 * sampleRate); // HF limit to prevent Nyquist blowout
     const T1 = tc.T1 !== null ? tc.T1 * 1e-6 : tLim;
 
+    this.isIecRecord = (standard === 'IEC' && mode === 'record');
+
     // Determine Numerator (Zero) and Denominator (Pole) time constants
     if (mode === "record") {
       this.tNum = tc.T1 !== null ? T1 : T2;
@@ -110,12 +115,8 @@ export class TapeEQ {
       this.tDen = tc.T1 !== null ? T1 : T2;
     }
 
+    this.tNumStandard = this.tNum;
     this.tDenStandard = this.tDen;
-
-    // Normalize at 1 kHz for unity gain
-    const w1k = 2 * Math.PI * 1000;
-    const magSq = (1 + (w1k * this.tNum) ** 2) / (1 + (w1k * this.tDen) ** 2);
-    this.normGain = 1 / Math.sqrt(magSq);
 
     this.updateCoefficients();
   }
@@ -128,10 +129,22 @@ export class TapeEQ {
   updateCoefficients(): void {
     // Cutoff frequency derived from the denominator time constant
     const cutoffHz = 1.0 / (2.0 * Math.PI * this.tDen);
-
-    // Pre-warped analog conductance (g)
     const wa = 2.0 * Math.PI * cutoffHz;
     this.g = Math.tan((wa * 0.5) / this.sampleRate);
+
+    // Cutoff frequency derived from the numerator time constant
+    const zeroHz = 1.0 / (2.0 * Math.PI * this.tNum);
+    const waZero = 2.0 * Math.PI * zeroHz;
+    const g_num = Math.tan((waZero * 0.5) / this.sampleRate);
+
+    // Use double pre-warping ratio so Record and Playback are exact digital inverses
+    this.hfBlendRatio = this.g / g_num;
+
+    // Digital normalization at 1 kHz for exact unity gain
+    const tan1k = Math.tan((Math.PI * 1000) / this.sampleRate);
+    const num1k = 1 + Math.pow(tan1k / g_num, 2);
+    const den1k = 1 + Math.pow(tan1k / this.g, 2);
+    this.normGain = 1 / Math.sqrt(num1k / den1k);
   }
 
   /**
@@ -148,11 +161,11 @@ export class TapeEQ {
    */
   setColor(v: number): void {
     const scale = Math.pow(2, -Math.max(-1, Math.min(1, v)));
-    this.tDen = this.tDenStandard * scale;
-    // Recompute normGain so 1 kHz reference stays accurate as the pole shifts
-    const w1k = 2 * Math.PI * 1000;
-    const magSq = (1 + (w1k * this.tNum) ** 2) / (1 + (w1k * this.tDen) ** 2);
-    this.normGain = 1 / Math.sqrt(magSq);
+    if (this.isIecRecord) {
+      this.tNum = this.tNumStandard * scale;
+    } else {
+      this.tDen = this.tDenStandard * scale;
+    }
     this.updateCoefficients();
   }
 
@@ -172,12 +185,7 @@ export class TapeEQ {
     if (Math.abs(this.s) < 1e-12) this.s = 0;
 
     // 4. Construct the complex EQ Curve
-    // H(s) = (1 + s*T_num) / (1 + s*T_den)
-    // In continuous RC logic, this is equivalent to blending the LP and HP outputs
-    // scaled by the ratio of their time constants.
-    const hfBlendRatio = this.tNum / this.tDen;
-
-    const output = yLP + hfBlendRatio * yHP;
+    const output = yLP + this.hfBlendRatio * yHP;
 
     return output * this.normGain;
   }

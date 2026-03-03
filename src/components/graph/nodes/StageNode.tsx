@@ -28,6 +28,8 @@ export const StageNode = memo(function StageNode({ data }: NodeProps) {
 
   const [linked, setLinked] = useState(false);
   const hasInputGain = 'inputGain' in def.params;
+  const hasDrive = 'drive' in def.params;
+  const canLink = hasInputGain || hasDrive;
 
   const handleBypass = useCallback(() => {
     setStageBypass(stageId, !state.bypassed);
@@ -39,13 +41,24 @@ export const StageNode = memo(function StageNode({ data }: NodeProps) {
   );
 
   const handleParamChange = useCallback((key: string, v: number) => {
-    if (linked && key === 'inputGain') {
-      const inputGainDef = def.params['inputGain'];
-      const prevGain = state.params['inputGain'] ?? inputGainDef.default;
-      const deltaDb = 20 * Math.log10(v / prevGain);
-      const prevTrim = state.params['_trim'] ?? 0;
-      const newTrim = Math.max(-12, Math.min(12, prevTrim - deltaDb));
-      setStageParam(stageId, '_trim', newTrim);
+    if (linked) {
+      let deltaDb = 0;
+      if (key === 'inputGain') {
+        const inputGainDef = def.params['inputGain'];
+        const prevGain = state.params['inputGain'] ?? inputGainDef.default;
+        deltaDb = 20 * Math.log10(v / prevGain);
+      } else if (key === 'drive') {
+        const driveDef = def.params['drive'];
+        const prevDrive = state.params['drive'] ?? driveDef.default;
+        // Empirical approximation: 0 to 1 drive adds roughly 18dB of gain
+        deltaDb = (v - prevDrive) * 18;
+      }
+      
+      if (deltaDb !== 0) {
+        const prevTrim = state.params['_trim'] ?? 0;
+        const newTrim = Math.max(-12, Math.min(12, prevTrim - deltaDb));
+        setStageParam(stageId, '_trim', newTrim);
+      }
     }
     setStageParam(stageId, key, v);
   }, [linked, stageId, state.params, def.params, setStageParam]);
@@ -62,11 +75,11 @@ export const StageNode = memo(function StageNode({ data }: NodeProps) {
       <div className="stage-node__header">
         <span className="stage-node__title">{label}</span>
         <div className="stage-node__header-buttons">
-          {hasInputGain && (
+          {canLink && (
             <button
               className={`stage-node__link nopan nodrag ${linked ? 'stage-node__link--active' : ''}`}
               onClick={() => setLinked((l) => !l)}
-              title="Link input gain to trim — moving Input compensates Trim to keep level constant"
+              title={hasInputGain ? "Link input gain to trim — moving Input compensates Trim to keep level constant" : "Link drive to trim — moving Drive compensates Trim to keep level roughly constant"}
             >
               LNK
             </button>

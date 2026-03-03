@@ -206,8 +206,8 @@ export class AmplifierModel {
   }
 
   /** Current plate supply voltage (for diagnostics/testing). */
-  getSagVpp(): number {
-    return this._sagVpp;
+  getScreenVoltage(): number {
+    return this.sagVscreen;
   }
 
   process(input: number): number {
@@ -446,7 +446,7 @@ export class AmplifierModel {
 
     // Update normalization based on settled rippling state
     const settled_Ip = this.i_nl_prev[0];
-    const settled_Vp = this._sagVpp - settled_Ip * Rp;
+    const settled_Vp = this.sagVscreen - settled_Ip * Rp;
     this.dcPlateVoltage = Math.max(1, settled_Vp);
 
     // Clear any fictitious saturation registered during warmup against the initial guess
@@ -459,7 +459,7 @@ export class AmplifierModel {
 
   private tubeProcess(u: number): number {
     const x = this.x;
-    const Vpp = this._sagVpp;
+    const Vpp = this.sagVscreen;
 
     // Newton-Raphson: solve for nonlinear tube currents [Ip, Ig]
     let Ip = this.i_nl_prev[0];
@@ -512,7 +512,7 @@ export class AmplifierModel {
     // Saturation depth: plate voltage headroom consumed.
     // Use a smaller offset (4%) to prevent the 120Hz AC mains power supply ripple from registering
     // as constant saturation on the UI meter when the amp is idling, but don't suppress real saturation too much.
-    const Vp = this._sagVpp - Ip * this.circuitParams.Rp;
+    const Vp = this.sagVscreen - Ip * this.circuitParams.Rp;
     const rawSat = 1 - Vp / this.dcPlateVoltage;
     this._saturationDepth = Math.max(0, Math.min(1, (rawSat - 0.04) / 0.96));
 
@@ -581,8 +581,8 @@ export class AmplifierModel {
 
     const I_filter = (Vpp - Vss) / AmplifierModel.SAG_R_FILTER;
 
-    const dVpp = (Irect - Ip - I_filter) / AmplifierModel.SAG_C1;
-    const dVss = (I_filter - Vss / AmplifierModel.SAG_R_BLEEDER) / AmplifierModel.SAG_C2;
+    const dVpp = (Irect - I_filter) / AmplifierModel.SAG_C1;
+    const dVss = (I_filter - Ip - Vss / AmplifierModel.SAG_R_BLEEDER) / AmplifierModel.SAG_C2;
 
     this._sagVpp = Math.max(0, Vpp + T * dVpp);
     this.sagVscreen = Math.max(0, Math.min(this._sagVpp, Vss + T * dVss));

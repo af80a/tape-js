@@ -193,13 +193,13 @@ class TapeProcessor extends AudioWorkletProcessor {
       } else if (stageId === 'playbackAmp') {
         const ampType = value as 'tube' | 'transistor';
         const circuit = ampType === 'tube' ? preset.tubeCircuit : undefined;
-        dsp.playbackAmp = new AmplifierModel(ampType, preset.playbackAmpDrive, circuit, fs);
+        dsp.playbackAmp = new AmplifierModel(ampType, preset.playbackAmpDrive, circuit, fs * this.oversampleFactor);
       } else if (stageId === 'recordEQ') {
         const standard = value as 'NAB' | 'IEC';
         dsp.recordEQ = new TapeEQ(fs * this.oversampleFactor, standard, this.tapeSpeed, 'record');
       } else if (stageId === 'playbackEQ') {
         const standard = value as 'NAB' | 'IEC';
-        dsp.playbackEQ = new TapeEQ(fs, standard, this.tapeSpeed, 'playback');
+        dsp.playbackEQ = new TapeEQ(fs * this.oversampleFactor, standard, this.tapeSpeed, 'playback');
       }
     }
   }
@@ -518,7 +518,7 @@ class TapeProcessor extends AudioWorkletProcessor {
       dsp.hysteresis.setDrive(ov.get('hysteresis.drive') ?? drive);
       dsp.hysteresis.setSaturation(ov.get('hysteresis.saturation') ?? saturation);
       dsp.recordAmp.setDrive(ov.get('recordAmp.drive') ?? ampDrive);
-      dsp.playbackAmp.setDrive(ov.get('playbackAmp.drive') ?? ampDrive);
+      dsp.playbackAmp.setDrive(ov.get('playbackAmp.drive') ?? ampDrive * 0.8);
       dsp.transport.setWow(ov.get('transport.wow') ?? wow);
       dsp.transport.setFlutter(ov.get('transport.flutter') ?? flutter);
       dsp.noise.setLevel(ov.get('noise.hiss') ?? hiss);

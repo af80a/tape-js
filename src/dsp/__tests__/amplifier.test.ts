@@ -278,7 +278,7 @@ describe('power supply sag (Sag v2.0 physics)', () => {
     let initialVpp = 0;
     for (let i = 0; i < fs * 0.1; i++) {
       amp.process(0);
-      initialVpp = Math.max(initialVpp, amp.getSagVpp());
+      initialVpp = Math.max(initialVpp, amp.getScreenVoltage());
     }
 
     // Process 0.5s of loud sine to invoke blocking distortion
@@ -290,7 +290,7 @@ describe('power supply sag (Sag v2.0 physics)', () => {
     let swollenVpp = 0;
     for (let i = 0; i < fs * 0.05; i++) {
       amp.process(1.5 * Math.sin(2 * Math.PI * 100 * i / fs));
-      swollenVpp = Math.max(swollenVpp, amp.getSagVpp());
+      swollenVpp = Math.max(swollenVpp, amp.getScreenVoltage());
     }
 
     // Supply voltage should have swollen measurably
@@ -306,7 +306,7 @@ describe('power supply sag (Sag v2.0 physics)', () => {
     let initialVpp = 0;
     for (let i = 0; i < fs * 0.1; i++) {
       amp.process(0);
-      initialVpp = Math.max(initialVpp, amp.getSagVpp());
+      initialVpp = Math.max(initialVpp, amp.getScreenVoltage());
     }
 
     // Heavy signal for 0.5s to force grid blocking / anti-sag
@@ -318,7 +318,7 @@ describe('power supply sag (Sag v2.0 physics)', () => {
     let swollenVpp = 0;
     for (let i = 0; i < fs * 0.05; i++) {
       amp.process(1.5 * Math.sin(2 * Math.PI * 100 * i / fs));
-      swollenVpp = Math.max(swollenVpp, amp.getSagVpp());
+      swollenVpp = Math.max(swollenVpp, amp.getScreenVoltage());
     }
 
     // Silence for 1.5s (supply recovers, cap discharges)
@@ -330,7 +330,7 @@ describe('power supply sag (Sag v2.0 physics)', () => {
     let recoveredVpp = 0;
     for (let i = 0; i < fs * 0.1; i++) {
       amp.process(0);
-      recoveredVpp = Math.max(recoveredVpp, amp.getSagVpp());
+      recoveredVpp = Math.max(recoveredVpp, amp.getScreenVoltage());
     }
 
     // Supply should have recovered below swollen level, close to initial
@@ -351,7 +351,7 @@ describe('sag time constant matches physical model', () => {
     let initialVpp = 0;
     for (let i = 0; i < fs * 0.1; i++) {
       amp.process(0);
-      initialVpp = Math.max(initialVpp, amp.getSagVpp());
+      initialVpp = Math.max(initialVpp, amp.getScreenVoltage());
     }
 
     // Drive hard for 500ms
@@ -362,7 +362,7 @@ describe('sag time constant matches physical model', () => {
     let finalVpp = 0;
     for (let i = 0; i < fs * 0.05; i++) {
       amp.process(1.5 * Math.sin(2 * Math.PI * 100 * i / fs));
-      finalVpp = Math.max(finalVpp, amp.getSagVpp());
+      finalVpp = Math.max(finalVpp, amp.getScreenVoltage());
     }
     const swellDepth = finalVpp - initialVpp;
 
@@ -373,7 +373,7 @@ describe('sag time constant matches physical model', () => {
     let initial100 = 0;
     for (let i = 0; i < fs * 0.1; i++) {
       amp100.process(0);
-      initial100 = Math.max(initial100, amp100.getSagVpp());
+      initial100 = Math.max(initial100, amp100.getScreenVoltage());
     }
 
     // Drive hard for exactly 100ms
@@ -382,7 +382,7 @@ describe('sag time constant matches physical model', () => {
       amp100.process(1.5 * Math.sin(2 * Math.PI * 100 * i / fs));
     }
 
-    const swollen100 = amp100.getSagVpp() - initial100;
+    const swollen100 = amp100.getScreenVoltage() - initial100;
 
     // The shift should be at least 35% of the eventual depth after 100ms.
     expect(swollen100 / swellDepth).toBeGreaterThan(0.35);
