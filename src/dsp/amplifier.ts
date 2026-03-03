@@ -170,7 +170,7 @@ export class AmplifierModel {
   ) {
     this.mode = mode;
     this.driveRaw = drive;
-    this.drive = mode === 'tube' ? 0.5 + drive * 4.0 : drive;
+    this.drive = mode === 'tube' ? 0.1 + drive * 5.0 : drive;
     this.circuitParams = circuitParams ?? DEFAULT_CIRCUIT;
     this.fs = fs;
 
@@ -182,7 +182,8 @@ export class AmplifierModel {
 
   setDrive(v: number): void {
     this.driveRaw = v;
-    this.drive = this.mode === 'tube' ? 0.5 + v * 4.0 : v;
+    // Map 0-1 to a range that allows very clean operation (0.1) up to heavy saturation (5.1)
+    this.drive = this.mode === 'tube' ? 0.1 + v * 5.0 : v;
   }
 
   /**
@@ -212,7 +213,11 @@ export class AmplifierModel {
   process(input: number): number {
     const driven = input * this.drive;
     if (this.mode === 'tube') {
-      return this.tubeProcess(driven);
+      // Very gentle makeup gain so it's not super quiet at 0%, but we do not
+      // use the aggressive (0.5 / this.drive) because it amplifies power supply ripple.
+      // E.g., at drive=0 (driveRaw=0), makeup=2.0. At drive=1, makeup=1.0.
+      const makeup = 1.0 + (1.0 - this.driveRaw) * 1.0;
+      return this.tubeProcess(driven) * makeup;
     }
     return this.transistorSaturate(driven);
   }
@@ -434,8 +439,8 @@ export class AmplifierModel {
     this.acPhase = 0;
 
     // Warmup: run the discrete system to its own periodic steady state.
-    // 48000 samples = 1 second.
-    for (let i = 0; i < 48000; i++) {
+    // 3 seconds ensures the slow SAG v2.0 filter caps fully settle.
+    for (let i = 0; i < 48000 * 3; i++) {
       this.tubeProcess(0);
     }
 
@@ -443,6 +448,9 @@ export class AmplifierModel {
     const settled_Ip = this.i_nl_prev[0];
     const settled_Vp = this._sagVpp - settled_Ip * Rp;
     this.dcPlateVoltage = Math.max(1, settled_Vp);
+
+    // Clear any fictitious saturation registered during warmup against the initial guess
+    this._saturationDepth = 0;
   }
 
   // -------------------------------------------------------------------------
@@ -502,8 +510,11 @@ export class AmplifierModel {
     this.i_nl_prev[1] = Ig;
 
     // Saturation depth: plate voltage headroom consumed.
+    // Use a smaller offset (4%) to prevent the 120Hz AC mains power supply ripple from registering
+    // as constant saturation on the UI meter when the amp is idling, but don't suppress real saturation too much.
     const Vp = this._sagVpp - Ip * this.circuitParams.Rp;
-    this._saturationDepth = Math.max(0, Math.min(1, 1 - Vp / this.dcPlateVoltage));
+    const rawSat = 1 - Vp / this.dcPlateVoltage;
+    this._saturationDepth = Math.max(0, Math.min(1, (rawSat - 0.04) / 0.96));
 
     // Output: y = Dd*x + Ed_vpp*Vpp + Fd*i_nl
     const y = this.Dd[0] * x[0] + this.Dd[1] * x[1] + this.Dd[2] * x[2] + this.Dd[3] * x[3]
