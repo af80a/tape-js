@@ -1,12 +1,28 @@
 /**
  * Oversampler with Polyphase FIR anti-aliasing filters.
  *
- * Uses a windowed-sinc (Blackman window) lowpass FIR to prevent aliasing
- * when nonlinear processing is applied at higher sample rates.
+ * Uses a Kaiser-windowed sinc lowpass FIR to prevent aliasing when nonlinear
+ * processing is applied at higher sample rates. Kaiser provides superior
+ * control over the stopband-attenuation/transition-width tradeoff compared
+ * to fixed windows (Blackman, Hann), achieving ~100dB stopband rejection
+ * suitable for 24-bit audio.
  * 
  * Implemented using a highly optimized polyphase structure with circular buffers
  * to eliminate unnecessary zero-multiplications and array shifting.
  */
+
+/** Zeroth-order modified Bessel function I0(x) via polynomial series. */
+function besselI0(x: number): number {
+  const halfX = x * 0.5;
+  let term = 1.0;
+  let sum = 1.0;
+  for (let k = 1; k <= 25; k++) {
+    term *= (halfX / k) * (halfX / k);
+    sum += term;
+    if (term < sum * 1e-16) break;
+  }
+  return sum;
+}
 
 export class Oversampler {
   /** Oversampling factor (1 = bypass, 2 or 4). */
@@ -58,19 +74,20 @@ export class Oversampler {
       return;
     }
 
-    // ---- Design windowed-sinc lowpass FIR ----
+    // ---- Design Kaiser-windowed sinc lowpass FIR ----
     const N = 31 * factor + 1; // filter length (odd)
     const cutoff = 1 / factor; // normalized to oversampled Nyquist
     const baseKernel = new Float64Array(N);
 
     const mid = (N - 1) / 2;
+    const kaiserBeta = 10.0; // ~100dB stopband attenuation (24-bit quality)
+    const I0beta = besselI0(kaiserBeta);
 
     for (let i = 0; i < N; i++) {
-      // Blackman window
-      const w =
-        0.42 -
-        0.5 * Math.cos((2 * Math.PI * i) / (N - 1)) +
-        0.08 * Math.cos((4 * Math.PI * i) / (N - 1));
+      // Kaiser window
+      const nNorm = (2 * i) / (N - 1) - 1; // normalized to [-1, 1]
+      const sqrtArg = 1 - nNorm * nNorm;
+      const w = besselI0(kaiserBeta * Math.sqrt(Math.max(0, sqrtArg))) / I0beta;
 
       // Sinc function
       const x = i - mid;

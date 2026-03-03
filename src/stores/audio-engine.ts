@@ -154,7 +154,7 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
   },
 
   setOversample: (factor: number) => {
-    const normalized = factor === 4 ? 4 : 2;
+    const normalized = factor === 8 ? 8 : factor === 4 ? 4 : 2;
     get().bridge?.postMessage({ type: 'set-oversample', value: normalized });
     set({ oversample: normalized });
   },

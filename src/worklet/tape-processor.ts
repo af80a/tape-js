@@ -124,8 +124,8 @@ class TapeProcessor extends AudioWorkletProcessor {
   // Per-stage param overrides from graph view (take precedence over AudioParams)
   private stageParamOverrides: Map<string, number> = new Map();
 
-  // Pre-allocated scratch buffer for single-sample oversampling (avoids GC in audio thread)
-  private readonly singleSample = new Float32Array(1);
+  // Pre-allocated scratch buffer for block-level oversampling (avoids GC in audio thread)
+  private readonly inputBlock = new Float32Array(128);
 
   constructor(options?: { processorOptions?: Record<string, unknown> }) {
     super();
@@ -313,13 +313,13 @@ class TapeProcessor extends AudioWorkletProcessor {
       hysteresis.setBaseC(preset.tapeFormulation.c);
       hysteresis.setAlpha(preset.tapeFormulation.alpha);
 
-      const recordOversampler = new Oversampler(oversampleFactor);
+      const recordOversampler = new Oversampler(oversampleFactor, 128);
       const head = new HeadModel(fs, speed, {
         gapWidth: preset.headGapWidth,
         spacing: preset.headSpacing,
         bumpGainDb: preset.bumpGainDb,
       });
-      const playbackOversampler = new Oversampler(oversampleFactor);
+      const playbackOversampler = new Oversampler(oversampleFactor, 128);
       const playbackAmp = new AmplifierModel(preset.ampType, preset.playbackAmpDrive, preset.tubeCircuit, fs * oversampleFactor);
       const playbackEQ = new TapeEQ(fs * oversampleFactor, preset.eqStandard, speed, 'playback');
       const outputXfmr = new TransformerModel(fs * oversampleFactor, preset.outputTransformer);
@@ -380,7 +380,8 @@ class TapeProcessor extends AudioWorkletProcessor {
     const hiss       = parameters['hiss'][0];
     const outputGain = this.stageParamOverrides.get('output.outputGain') ?? parameters['outputGain'][0];
 
-    const singleSample = this.singleSample;
+    const inputBlock = this.inputBlock;
+    const factor = this.oversampleFactor > 1 ? this.oversampleFactor : 1;
 
     // Cache ballistics coefficients as locals for inner loop
     const attackCoeff = this.vuAttackCoeff;
@@ -523,86 +524,96 @@ class TapeProcessor extends AudioWorkletProcessor {
       dsp.transport.setFlutter(ov.get('transport.flutter') ?? flutter);
       dsp.noise.setLevel(ov.get('noise.hiss') ?? hiss);
 
+      // ---- INPUT PREPARATION (base rate) ----
       for (let i = 0; i < blockSize; i++) {
-        const dry = inp[i];
-        let x = dry * inputGain;
-
+        const x = inp[i] * inputGain;
+        inputBlock[i] = x;
         updateStageMeter(slInputXfmr, 0, x);
+      }
 
-        // Per-sample bias smoothing (prevents click on bias bypass toggle)
-        this.smoothedBias[ch] += (targetBias - this.smoothedBias[ch]) * (1 - biasSmoothCoeff);
-        dsp.hysteresis.setBias(this.smoothedBias[ch]);
+      // ---- PHASE 1: RECORD CHAIN (block oversampled) ----
+      const recUpsampled = dsp.recordOversampler.upsample(inputBlock);
+      const recOsLen = blockSize * factor;
+      const ooF = 1 / factor;
 
-        // --- RECORD CHAIN (Always oversampled to keep FIR/ODE state current) ---
-        singleSample[0] = x;
-        const recUpsampled = dsp.recordOversampler.upsample(singleSample);
-        const recOsLen = recUpsampled.length;
+      let p0 = 0, k0 = 0, p1 = 0, k1 = 0, p2 = 0, k2 = 0, p3 = 0, k3 = 0;
+      let maxSatInputXfmr = 0, maxSatRecordAmp = 0, maxSatHysteresis = 0;
 
-        let p0 = 0, k0 = 0, p1 = 0, k1 = 0, p2 = 0, k2 = 0, p3 = 0, k3 = 0;
-        let maxSatInputXfmr = 0, maxSatRecordAmp = 0, maxSatHysteresis = 0;
-
-        for (let j = 0; j < recOsLen; j++) {
-          let v = recUpsampled[j];
-
-          // inputXfmr: always process, blend with dry
-          const dryXfmr = v;
-          v = dsp.inputXfmr.process(v) * trimInputXfmr;
-          maxSatInputXfmr = Math.max(maxSatInputXfmr, dsp.inputXfmr.getSaturationDepth());
-          v = dryXfmr + (v - dryXfmr) * fadeInputXfmr;
-          p0 += v * v; k0 = Math.max(k0, Math.abs(v));
-
-          // recordAmp: always process, blend with dry
-          const dryRamp = v;
-          v = dsp.recordAmp.process(v) * trimRecordAmp;
-          maxSatRecordAmp = Math.max(maxSatRecordAmp, dsp.recordAmp.getSaturationDepth());
-          v = dryRamp + (v - dryRamp) * fadeRecordAmp;
-          p1 += v * v; k1 = Math.max(k1, Math.abs(v));
-
-          // recordEQ: always process, blend with dry
-          const dryReq = v;
-          v = dsp.recordEQ.process(v) * trimRecordEQ;
-          v = dryReq + (v - dryReq) * fadeRecordEQ;
-          p2 += v * v; k2 = Math.max(k2, Math.abs(v));
-
-          // hysteresis: always process, blend with dry
-          const dryHyst = v;
-          v = dsp.hysteresis.process(v) * trimHysteresis;
-          maxSatHysteresis = Math.max(maxSatHysteresis, dsp.hysteresis.getSaturationDepth());
-          v = dryHyst + (v - dryHyst) * fadeHysteresis;
-          p3 += v * v; k3 = Math.max(k3, Math.abs(v));
-
-          recUpsampled[j] = v;
+      for (let j = 0; j < recOsLen; j++) {
+        // Bias smoothing at base-rate boundaries
+        if (j % factor === 0) {
+          this.smoothedBias[ch] += (targetBias - this.smoothedBias[ch]) * (1 - biasSmoothCoeff);
+          dsp.hysteresis.setBias(this.smoothedBias[ch]);
         }
 
-        const recOoN = 1 / recOsLen;
-        updateStageMeterPwr(slInputXfmr,  1, p0 * recOoN, k0);
-        updateStageMeterPwr(slRecordAmp,  0, p0 * recOoN, k0);
-        updateStageMeterPwr(slRecordAmp,  1, p1 * recOoN, k1);
-        updateStageMeterPwr(slRecordEQ,   0, p1 * recOoN, k1);
-        updateStageMeterPwr(slRecordEQ,   1, p2 * recOoN, k2);
-        updateStageMeterPwr(slHysteresis, 0, p2 * recOoN, k2);
-        updateStageMeterPwr(slHysteresis, 1, p3 * recOoN, k3);
+        let v = recUpsampled[j];
 
-        x = dsp.recordOversampler.downsample(recUpsampled)[0];
+        const dryXfmr = v;
+        v = dsp.inputXfmr.process(v) * trimInputXfmr;
+        maxSatInputXfmr = Math.max(maxSatInputXfmr, dsp.inputXfmr.getSaturationDepth());
+        v = dryXfmr + (v - dryXfmr) * fadeInputXfmr;
+        p0 += v * v; k0 = Math.max(k0, Math.abs(v));
 
-        // Update saturation accumulators (scaled by fade so meters show 0 when bypassed)
-        maxSatInputXfmr *= fadeInputXfmr;
-        const prevSatIxfmr = this.stageSaturation.get('inputXfmr')!;
-        this.stageSaturation.set('inputXfmr', prevSatIxfmr + (maxSatInputXfmr - prevSatIxfmr) * (maxSatInputXfmr > prevSatIxfmr ? (1 - attackCoeff) : (1 - releaseCoeff)));
+        const dryRamp = v;
+        v = dsp.recordAmp.process(v) * trimRecordAmp;
+        maxSatRecordAmp = Math.max(maxSatRecordAmp, dsp.recordAmp.getSaturationDepth());
+        v = dryRamp + (v - dryRamp) * fadeRecordAmp;
+        p1 += v * v; k1 = Math.max(k1, Math.abs(v));
 
-        maxSatRecordAmp *= fadeRecordAmp;
-        const prevSatRamp = this.stageSaturation.get('recordAmp')!;
-        this.stageSaturation.set('recordAmp', prevSatRamp + (maxSatRecordAmp - prevSatRamp) * (maxSatRecordAmp > prevSatRamp ? (1 - attackCoeff) : (1 - releaseCoeff)));
+        const dryReq = v;
+        v = dsp.recordEQ.process(v) * trimRecordEQ;
+        v = dryReq + (v - dryReq) * fadeRecordEQ;
+        p2 += v * v; k2 = Math.max(k2, Math.abs(v));
 
-        maxSatHysteresis *= fadeHysteresis;
-        const prevSatHyst = this.stageSaturation.get('hysteresis')!;
-        this.stageSaturation.set('hysteresis', prevSatHyst + (maxSatHysteresis - prevSatHyst) * (maxSatHysteresis > prevSatHyst ? (1 - attackCoeff) : (1 - releaseCoeff)));
+        const dryHyst = v;
+        v = dsp.hysteresis.process(v) * trimHysteresis;
+        maxSatHysteresis = Math.max(maxSatHysteresis, dsp.hysteresis.getSaturationDepth());
+        v = dryHyst + (v - dryHyst) * fadeHysteresis;
+        p3 += v * v; k3 = Math.max(k3, Math.abs(v));
 
-        // Bias metering
+        recUpsampled[j] = v;
+
+        // Per-base-rate-sample: update meters, saturation, fades, reset sub-accumulators
+        if ((j + 1) % factor === 0) {
+          updateStageMeterPwr(slInputXfmr,  1, p0 * ooF, k0);
+          updateStageMeterPwr(slRecordAmp,  0, p0 * ooF, k0);
+          updateStageMeterPwr(slRecordAmp,  1, p1 * ooF, k1);
+          updateStageMeterPwr(slRecordEQ,   0, p1 * ooF, k1);
+          updateStageMeterPwr(slRecordEQ,   1, p2 * ooF, k2);
+          updateStageMeterPwr(slHysteresis, 0, p2 * ooF, k2);
+          updateStageMeterPwr(slHysteresis, 1, p3 * ooF, k3);
+
+          let msi = maxSatInputXfmr * fadeInputXfmr;
+          const psi = this.stageSaturation.get('inputXfmr')!;
+          this.stageSaturation.set('inputXfmr', psi + (msi - psi) * (msi > psi ? (1 - attackCoeff) : (1 - releaseCoeff)));
+
+          let msr = maxSatRecordAmp * fadeRecordAmp;
+          const psr = this.stageSaturation.get('recordAmp')!;
+          this.stageSaturation.set('recordAmp', psr + (msr - psr) * (msr > psr ? (1 - attackCoeff) : (1 - releaseCoeff)));
+
+          let msh = maxSatHysteresis * fadeHysteresis;
+          const psh = this.stageSaturation.get('hysteresis')!;
+          this.stageSaturation.set('hysteresis', psh + (msh - psh) * (msh > psh ? (1 - attackCoeff) : (1 - releaseCoeff)));
+
+          fadeInputXfmr = advanceFade(fadeInputXfmr, bypassInputXfmr);
+          fadeRecordAmp = advanceFade(fadeRecordAmp, bypassRecordAmp);
+          fadeRecordEQ = advanceFade(fadeRecordEQ, bypassRecordEQ);
+          fadeHysteresis = advanceFade(fadeHysteresis, bypassHysteresis);
+
+          p0 = 0; k0 = 0; p1 = 0; k1 = 0; p2 = 0; k2 = 0; p3 = 0; k3 = 0;
+          maxSatInputXfmr = 0; maxSatRecordAmp = 0; maxSatHysteresis = 0;
+        }
+      }
+
+      const tapeBlock = dsp.recordOversampler.downsample(recUpsampled);
+
+      // ---- PHASE 2: BASE-RATE TAPE (head, transport, noise) ----
+      for (let i = 0; i < blockSize; i++) {
+        let x = tapeBlock[i];
+
         updateStageMeter(slBias, 0, x);
         updateStageMeter(slBias, 1, x);
 
-        // --- TAPE/HEAD INTERFACE (Base rate, always process + blend) ---
         updateStageMeter(slHead, 0, x);
         const dryHead = x;
         x = dsp.head.process(x) * trimHead;
@@ -621,88 +632,89 @@ class TapeProcessor extends AudioWorkletProcessor {
         x = dryNoise + (x - dryNoise) * fadeNoise;
         updateStageMeter(slNoise, 1, x);
 
-        // --- PLAYBACK CHAIN (Always oversampled to keep FIR/ODE state current) ---
-        updateStageMeter(slPlaybackAmp, 0, x);
-        singleSample[0] = x;
-        const pbUpsampled = dsp.playbackOversampler.upsample(singleSample);
-        const pbOsLen = pbUpsampled.length;
+        tapeBlock[i] = x;
 
-        let pb0 = 0, pk0 = 0, pb1 = 0, pk1 = 0, pb2 = 0, pk2 = 0;
-        let maxSatPlaybackAmp = 0, maxSatOutputXfmr = 0;
+        fadeHead = advanceFade(fadeHead, bypassHead);
+        fadeTransport = advanceFade(fadeTransport, bypassTransport);
+        fadeNoise = advanceFade(fadeNoise, bypassNoise);
+      }
 
-        for (let j = 0; j < pbOsLen; j++) {
-          let v = pbUpsampled[j];
+      // ---- PHASE 3: PLAYBACK CHAIN (block oversampled) ----
+      for (let i = 0; i < blockSize; i++) {
+        updateStageMeter(slPlaybackAmp, 0, tapeBlock[i]);
+      }
 
-          // playbackAmp: always process, blend with dry
-          const dryPamp = v;
-          v = dsp.playbackAmp.process(v) * trimPlaybackAmp;
-          maxSatPlaybackAmp = Math.max(maxSatPlaybackAmp, dsp.playbackAmp.getSaturationDepth());
-          v = dryPamp + (v - dryPamp) * fadePlaybackAmp;
-          pb0 += v * v; pk0 = Math.max(pk0, Math.abs(v));
+      const pbUpsampled = dsp.playbackOversampler.upsample(tapeBlock);
+      const pbOsLen = blockSize * factor;
 
-          // playbackEQ: always process, blend with dry
-          const dryPeq = v;
-          v = dsp.playbackEQ.process(v) * trimPlaybackEQ;
-          v = dryPeq + (v - dryPeq) * fadePlaybackEQ;
-          pb1 += v * v; pk1 = Math.max(pk1, Math.abs(v));
+      let pb0 = 0, pk0 = 0, pb1 = 0, pk1 = 0, pb2 = 0, pk2 = 0;
+      let maxSatPlaybackAmp = 0, maxSatOutputXfmr = 0;
 
-          // outputXfmr: always process, blend with dry
-          const dryOxfmr = v;
-          v = dsp.outputXfmr.process(v) * trimOutputXfmr;
-          maxSatOutputXfmr = Math.max(maxSatOutputXfmr, dsp.outputXfmr.getSaturationDepth());
-          v = dryOxfmr + (v - dryOxfmr) * fadeOutputXfmr;
-          pb2 += v * v; pk2 = Math.max(pk2, Math.abs(v));
+      for (let j = 0; j < pbOsLen; j++) {
+        let v = pbUpsampled[j];
 
-          pbUpsampled[j] = v;
+        const dryPamp = v;
+        v = dsp.playbackAmp.process(v) * trimPlaybackAmp;
+        maxSatPlaybackAmp = Math.max(maxSatPlaybackAmp, dsp.playbackAmp.getSaturationDepth());
+        v = dryPamp + (v - dryPamp) * fadePlaybackAmp;
+        pb0 += v * v; pk0 = Math.max(pk0, Math.abs(v));
+
+        const dryPeq = v;
+        v = dsp.playbackEQ.process(v) * trimPlaybackEQ;
+        v = dryPeq + (v - dryPeq) * fadePlaybackEQ;
+        pb1 += v * v; pk1 = Math.max(pk1, Math.abs(v));
+
+        const dryOxfmr = v;
+        v = dsp.outputXfmr.process(v) * trimOutputXfmr;
+        maxSatOutputXfmr = Math.max(maxSatOutputXfmr, dsp.outputXfmr.getSaturationDepth());
+        v = dryOxfmr + (v - dryOxfmr) * fadeOutputXfmr;
+        pb2 += v * v; pk2 = Math.max(pk2, Math.abs(v));
+
+        pbUpsampled[j] = v;
+
+        // Per-base-rate-sample: update meters, saturation, fades, reset sub-accumulators
+        if ((j + 1) % factor === 0) {
+          updateStageMeterPwr(slPlaybackAmp,  1, pb0 * ooF, pk0);
+          updateStageMeterPwr(slPlaybackEQ,   0, pb0 * ooF, pk0);
+          updateStageMeterPwr(slPlaybackEQ,   1, pb1 * ooF, pk1);
+          updateStageMeterPwr(slOutputXfmr,   0, pb1 * ooF, pk1);
+          updateStageMeterPwr(slOutputXfmr,   1, pb2 * ooF, pk2);
+
+          let msp = maxSatPlaybackAmp * fadePlaybackAmp;
+          const psp = this.stageSaturation.get('playbackAmp')!;
+          this.stageSaturation.set('playbackAmp', psp + (msp - psp) * (msp > psp ? (1 - attackCoeff) : (1 - releaseCoeff)));
+
+          let mso = maxSatOutputXfmr * fadeOutputXfmr;
+          const pso = this.stageSaturation.get('outputXfmr')!;
+          this.stageSaturation.set('outputXfmr', pso + (mso - pso) * (mso > pso ? (1 - attackCoeff) : (1 - releaseCoeff)));
+
+          fadePlaybackAmp = advanceFade(fadePlaybackAmp, bypassPlaybackAmp);
+          fadePlaybackEQ = advanceFade(fadePlaybackEQ, bypassPlaybackEQ);
+          fadeOutputXfmr = advanceFade(fadeOutputXfmr, bypassOutputXfmr);
+
+          pb0 = 0; pk0 = 0; pb1 = 0; pk1 = 0; pb2 = 0; pk2 = 0;
+          maxSatPlaybackAmp = 0; maxSatOutputXfmr = 0;
         }
+      }
 
-        const pbOoN = 1 / pbOsLen;
-        updateStageMeterPwr(slPlaybackAmp,  1, pb0 * pbOoN, pk0);
-        updateStageMeterPwr(slPlaybackEQ,   0, pb0 * pbOoN, pk0);
-        updateStageMeterPwr(slPlaybackEQ,   1, pb1 * pbOoN, pk1);
-        updateStageMeterPwr(slOutputXfmr,   0, pb1 * pbOoN, pk1);
-        updateStageMeterPwr(slOutputXfmr,   1, pb2 * pbOoN, pk2);
+      const outputBlock = dsp.playbackOversampler.downsample(pbUpsampled);
 
-        x = dsp.playbackOversampler.downsample(pbUpsampled)[0];
+      // ---- PHASE 4: OUTPUT + VU METERING (base rate) ----
+      for (let i = 0; i < blockSize; i++) {
+        let x = outputBlock[i];
 
-        // Update saturation accumulators (scaled by fade)
-        maxSatPlaybackAmp *= fadePlaybackAmp;
-        const prevSatPamp = this.stageSaturation.get('playbackAmp')!;
-        this.stageSaturation.set('playbackAmp', prevSatPamp + (maxSatPlaybackAmp - prevSatPamp) * (maxSatPlaybackAmp > prevSatPamp ? (1 - attackCoeff) : (1 - releaseCoeff)));
-
-        maxSatOutputXfmr *= fadeOutputXfmr;
-        const prevSatOxfmr = this.stageSaturation.get('outputXfmr')!;
-        this.stageSaturation.set('outputXfmr', prevSatOxfmr + (maxSatOutputXfmr - prevSatOxfmr) * (maxSatOutputXfmr > prevSatOxfmr ? (1 - attackCoeff) : (1 - releaseCoeff)));
-
-        // Safety net: avoid NaN/Infinity propagating to the output channel.
         if (!Number.isFinite(x)) x = 0;
-
-        // Clamp to [-2, 2]
         x = Math.max(-2, Math.min(2, x));
 
-        // Global bypass crossfade
         updateStageMeter(slOutput, 0, x);
         const globalTarget = this.bypassed ? 1 : 0;
         if (bypassFade !== globalTarget) {
           bypassFade += globalTarget > bypassFade ? fadeStep : -fadeStep;
           bypassFade = Math.max(0, Math.min(1, bypassFade));
         }
-        out[i] = dry * bypassFade + (x * outputGain) * (1 - bypassFade);
+        out[i] = inp[i] * bypassFade + (x * outputGain) * (1 - bypassFade);
         updateStageMeter(slOutput, 1, out[i]);
 
-        // Advance per-stage fades toward their targets
-        fadeInputXfmr = advanceFade(fadeInputXfmr, bypassInputXfmr);
-        fadeRecordAmp = advanceFade(fadeRecordAmp, bypassRecordAmp);
-        fadeRecordEQ = advanceFade(fadeRecordEQ, bypassRecordEQ);
-        fadeHysteresis = advanceFade(fadeHysteresis, bypassHysteresis);
-        fadeHead = advanceFade(fadeHead, bypassHead);
-        fadeTransport = advanceFade(fadeTransport, bypassTransport);
-        fadeNoise = advanceFade(fadeNoise, bypassNoise);
-        fadePlaybackAmp = advanceFade(fadePlaybackAmp, bypassPlaybackAmp);
-        fadePlaybackEQ = advanceFade(fadePlaybackEQ, bypassPlaybackEQ);
-        fadeOutputXfmr = advanceFade(fadeOutputXfmr, bypassOutputXfmr);
-
-        // VU ballistics metering (per-sample)
         const power = out[i] * out[i];
         const vuCoeff = power > this.vuPower[ch] ? attackCoeff : releaseCoeff;
         this.vuPower[ch] = vuCoeff * this.vuPower[ch] + (1 - vuCoeff) * power;

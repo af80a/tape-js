@@ -408,52 +408,121 @@ describe('getSaturationDepth', () => {
     expect(amp2.getSaturationDepth()).toBeGreaterThan(amp1.getSaturationDepth());
   });
 
-  it('returns 0 for transistor mode below threshold', () => {
+  it('returns low saturation for transistor mode with small signal', () => {
     const amp = new AmplifierModel('transistor', 0.1, undefined, 48000);
     for (let i = 0; i < 50; i++) amp.process(0.1 * Math.sin(i * 0.1));
-    expect(amp.getSaturationDepth()).toBe(0);
+    expect(amp.getSaturationDepth()).toBeLessThan(0.3);
   });
 
-  it('returns > 0 for transistor mode above threshold', () => {
+  it('returns > 0 for transistor mode with large signal', () => {
     const amp = new AmplifierModel('transistor', 1.0, undefined, 48000);
     for (let i = 0; i < 50; i++) amp.process(0.9 * Math.sin(i * 0.1));
     expect(amp.getSaturationDepth()).toBeGreaterThan(0);
   });
 });
 
-describe('backward compatibility', () => {
-  it('transistor mode is symmetric', () => {
-    const amp = new AmplifierModel('transistor', 2.0);
-    const outPos = amp.process(0.8);
-    const outNeg = amp.process(-0.8);
-    expect(Math.abs(outPos)).toBeCloseTo(Math.abs(outNeg), 2);
-  });
-
-  it('transistor mode preserves amplitude below threshold', () => {
+describe('transistor dynamic bias model', () => {
+  it('produces asymmetric output (Class-A characteristic)', () => {
     const amp = new AmplifierModel('transistor', 1.0);
-    // Input below threshold (0.85) with drive=1.0 should pass through linearly
-    const out = amp.process(0.5);
-    expect(out).toBeCloseTo(0.5, 2);
+    const fs = 48000;
+    const outputs: number[] = [];
+    for (let i = 0; i < fs * 0.2; i++) {
+      outputs.push(amp.process(0.8 * Math.sin(2 * Math.PI * 440 * i / fs)));
+    }
+    const steady = outputs.slice(Math.floor(outputs.length * 0.5));
+    const posPeak = Math.max(...steady);
+    const negPeak = Math.min(...steady);
+    expect(Math.abs(Math.abs(posPeak) - Math.abs(negPeak))).toBeGreaterThan(0.01);
   });
 
-  it('transistor setDrive uses raw value (no tube mapping)', () => {
+  it('bias drifts under sustained asymmetric drive', () => {
+    const amp = new AmplifierModel('transistor', 1.0);
+    const fs = 48000;
+    for (let i = 0; i < fs * 0.5; i++) {
+      amp.process(0.9 * Math.sin(2 * Math.PI * 100 * i / fs));
+    }
+    expect(amp.getSaturationDepth()).toBeGreaterThan(0);
+  });
+
+  it('small signals pass through nearly linearly (tanh ≈ x for |x| << 1)', () => {
     const amp = new AmplifierModel('transistor', 1.0);
     amp.setDrive(0.5);
-    // 0.3 * 0.5 = 0.15, well below threshold → linear
     const out = amp.process(0.3);
-    expect(out).toBeCloseTo(0.15, 2);
+    expect(out).toBeCloseTo(0.15, 1);
   });
 
+  it('reset clears bias state', () => {
+    const amp = new AmplifierModel('transistor', 1.0);
+    for (let i = 0; i < 5000; i++) {
+      amp.process(0.9 * Math.sin(i * 0.1));
+    }
+    amp.reset();
+    const out = amp.process(0.01);
+    expect(out).toBeCloseTo(Math.tanh(0.01), 2);
+  });
+});
+
+describe('backward compatibility', () => {
   it('reset clears state and does not throw', () => {
     const amp = new AmplifierModel('tube', 1.0);
     for (let i = 0; i < 100; i++) {
       amp.process(Math.sin(i * 0.1));
     }
     expect(() => amp.reset()).not.toThrow();
-    // After reset, zero input should give near-zero output
     for (let i = 0; i < 100; i++) {
       amp.process(0);
     }
     expect(Math.abs(amp.process(0))).toBeLessThan(0.01);
+  });
+});
+
+describe('Newton-Raphson step clamping', () => {
+  it('survives extreme transient spikes without NaN', () => {
+    const amp = new AmplifierModel('tube', 1.0);
+    amp.setDrive(1.0);
+    const fs = 48000;
+    for (let i = 0; i < 1000; i++) {
+      amp.process(0.1 * Math.sin(2 * Math.PI * 440 * i / fs));
+    }
+    // Sudden extreme spike
+    for (const spike of [10, -10, 50, -50, 100]) {
+      const y = amp.process(spike);
+      expect(Number.isFinite(y)).toBe(true);
+    }
+    // Model should still be stable after the spikes
+    for (let i = 0; i < 1000; i++) {
+      const y = amp.process(0.3 * Math.sin(2 * Math.PI * 440 * i / fs));
+      expect(Number.isFinite(y)).toBe(true);
+    }
+  });
+});
+
+describe('Backward Euler sag stability', () => {
+  it('remains stable with extreme component values', () => {
+    const extremeCircuit: TubeCircuitParams = {
+      Rp: 220e3, Rg: 10e6, Rk: 10e3,
+      Cc_in: 1e-9, Cc_out: 1e-9, Ck: 100e-6,
+      Vpp: 400,
+    };
+    const amp = new AmplifierModel('tube', 1.0, extremeCircuit);
+    amp.setDrive(1.0);
+    const fs = 48000;
+    for (let i = 0; i < fs * 0.5; i++) {
+      const y = amp.process(1.5 * Math.sin(2 * Math.PI * 100 * i / fs));
+      expect(Number.isFinite(y)).toBe(true);
+    }
+    // Screen voltage should be positive and finite
+    expect(amp.getScreenVoltage()).toBeGreaterThan(0);
+    expect(Number.isFinite(amp.getScreenVoltage())).toBe(true);
+  });
+
+  it('sag voltage never goes negative', () => {
+    const amp = new AmplifierModel('tube', 1.0);
+    amp.setDrive(1.0);
+    const fs = 48000;
+    for (let i = 0; i < fs * 2; i++) {
+      amp.process(2.0 * Math.sin(2 * Math.PI * 50 * i / fs));
+      expect(amp.getScreenVoltage()).toBeGreaterThanOrEqual(0);
+    }
   });
 });

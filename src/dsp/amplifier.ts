@@ -3,9 +3,9 @@
  *
  * - Tube mode: Nodal DK-Method circuit simulation of a common-cathode
  *   12AX7 triode stage with Cohen-Helie equations and power supply sag.
- * - Transistor mode: Symmetric hard-knee clipping with tanh compression
- *   above a threshold, producing odd harmonics characteristic of
- *   solid-state amplifiers.
+ * - Transistor mode: Dynamic-bias asymmetric Class-A model with coupling
+ *   capacitor memory, duty-cycle modulation, and slew-rate dependent
+ *   saturation characteristic of solid-state tape amplifiers.
  */
 
 // ---------------------------------------------------------------------------
@@ -46,7 +46,7 @@ export function gridCurrentIg(Vgk: number): number {
   } else {
     V_eff = Math.log(1 + Math.exp(arg)) / 10;
   }
-  return 1e-9 + 1.5e-3 * Math.pow(V_eff, 1.5);
+  return 1e-9 + 1.5e-3 * V_eff * Math.sqrt(V_eff);
 }
 
 /**
@@ -120,6 +120,10 @@ export class AmplifierModel {
   private circuitParams: TubeCircuitParams;
   private fs: number;
 
+  // Transistor mode state (dynamic bias from coupling capacitor charging)
+  private txBiasState = 0;           // DC offset from coupling cap rectification
+  private txBiasAlpha = 0;           // one-pole recovery coefficient (~50ms)
+
   // Tube mode state (4 states now, natively including C_ga for Miller effect)
   private x = [0, 0, 0, 0];         // [V_Cc_in, V_Cc_out, V_Ck, V_Cga]
   private i_nl_prev = [0, 0];       // [Ip, Ig] from previous sample
@@ -145,6 +149,10 @@ export class AmplifierModel {
   private static readonly SAG_R_BLEEDER = 220e3;   // bleeder resistor
 
   private acPhase = 0;            // Phase of the AC mains
+
+  // Precomputed Backward Euler denominators for unconditionally stable sag integration
+  private sagDenomC1 = 1;
+  private sagDenomC2 = 1;
 
   // State-space matrices (precomputed from circuit topology + trapezoidal rule)
   // v_nl = Hd*x + Kd_vin*u + Kd_vpp*Vpp + Ld*i_nl
@@ -173,6 +181,7 @@ export class AmplifierModel {
     this.drive = mode === 'tube' ? 0.1 + drive * 5.0 : drive;
     this.circuitParams = circuitParams ?? DEFAULT_CIRCUIT;
     this.fs = fs;
+    this.txBiasAlpha = Math.exp(-1 / (fs * 0.05));
 
     if (mode === 'tube') {
       this.initStateSpace();
@@ -225,6 +234,8 @@ export class AmplifierModel {
   reset(): void {
     if (this.mode === 'tube') {
       this.solveDCOperatingPoint();
+    } else {
+      this.txBiasState = 0;
     }
   }
 
@@ -381,6 +392,11 @@ export class AmplifierModel {
 
     this.Fd[0] = c_V2_Ip * rl_frac;
     this.Fd[1] = c_V2_Ig * rl_frac;
+
+    // Precompute Backward Euler denominators for sag integration
+    this.sagDenomC1 = 1 + T / (AmplifierModel.SAG_R_FILTER * AmplifierModel.SAG_C1);
+    this.sagDenomC2 = 1 + T / (AmplifierModel.SAG_R_FILTER * AmplifierModel.SAG_C2)
+                        + T / (AmplifierModel.SAG_R_BLEEDER * AmplifierModel.SAG_C2);
   }
 
   // -------------------------------------------------------------------------
@@ -439,8 +455,11 @@ export class AmplifierModel {
     this.acPhase = 0;
 
     // Warmup: run the discrete system to its own periodic steady state.
-    // 3 seconds ensures the slow SAG v2.0 filter caps fully settle.
-    for (let i = 0; i < 48000 * 3; i++) {
+    // 3 real-time seconds ensures the slow SAG v2.0 filter caps fully settle
+    // (bleeder RC ≈ 4.8s). Must scale with fs so behavior is identical
+    // regardless of oversampling factor.
+    const warmupSamples = Math.round(this.fs * 3);
+    for (let i = 0; i < warmupSamples; i++) {
       this.tubeProcess(0);
     }
 
@@ -501,8 +520,13 @@ export class AmplifierModel {
       // Solve M * delta = -residual via Cramer's rule
       const d0 = -(M11 * r0 - M01 * r1) / det;
       const d1 = -(-M10 * r0 + M00 * r1) / det;
-      Ip += d0;
-      Ig += d1;
+
+      // Clamp step to physically reasonable current deltas to prevent
+      // exponential overshoot on intense transients (12AX7: Ip ~ 0.5-2mA)
+      const MAX_DIP = 0.01;
+      const MAX_DIG = 0.001;
+      Ip += Math.max(-MAX_DIP, Math.min(MAX_DIP, d0));
+      Ig += Math.max(-MAX_DIG, Math.min(MAX_DIG, d1));
     }
 
     // Store converged currents for next sample's initial guess
@@ -540,7 +564,7 @@ export class AmplifierModel {
   }
 
   // -------------------------------------------------------------------------
-  // Power supply sag model (forward-Euler)
+  // Power supply sag model (Backward Euler — unconditionally stable)
   // -------------------------------------------------------------------------
 
   private updateSag(Ip: number): void {
@@ -549,8 +573,7 @@ export class AmplifierModel {
     const Vss = this.sagVscreen;
     const Videal = this.circuitParams.Vpp;
 
-    // Unloaded DC is Videal, so peak AC secondary is Videal
-    const V_sec_peak = Videal; 
+    const V_sec_peak = Videal;
 
     // Advance AC mains phase (60Hz)
     this.acPhase += 2 * Math.PI * AmplifierModel.SAG_MAINS_FREQ * T;
@@ -563,13 +586,12 @@ export class AmplifierModel {
 
     let Irect = 0;
     if (Vac > Vpp) {
-      // 1D Newton solver for physical rectifier diode equation
-      // f(I) = I * R_sec + (I / K_rect)^(2/3) - (Vac - Vpp) = 0
       const Vdiff = Vac - Vpp;
-      let I = Vdiff / AmplifierModel.SAG_R_SEC; // Initial guess
+      let I = Vdiff / AmplifierModel.SAG_R_SEC;
       for (let i = 0; i < 5; i++) {
         if (I <= 1e-9) { I = 0; break; }
-        const tube_drop = Math.pow(I / AmplifierModel.SAG_K_RECT, 2 / 3);
+        const t_cbrt = Math.cbrt(I / AmplifierModel.SAG_K_RECT);
+        const tube_drop = t_cbrt * t_cbrt;
         const f = I * AmplifierModel.SAG_R_SEC + tube_drop - Vdiff;
         const df = AmplifierModel.SAG_R_SEC + (2 / 3) * tube_drop / I;
         const dI = f / df;
@@ -579,30 +601,47 @@ export class AmplifierModel {
       Irect = I > 1e-9 ? I : 0;
     }
 
-    const I_filter = (Vpp - Vss) / AmplifierModel.SAG_R_FILTER;
+    // Backward Euler: solve implicit equations analytically
+    // C1: Vpp_new*(1 + T/(Rf*C1)) = Vpp + T*(Irect + Vss/Rf)/C1
+    const Vpp_new = (Vpp + T * (Irect + Vss / AmplifierModel.SAG_R_FILTER) / AmplifierModel.SAG_C1)
+                    / this.sagDenomC1;
 
-    const dVpp = (Irect - I_filter) / AmplifierModel.SAG_C1;
-    const dVss = (I_filter - Ip - Vss / AmplifierModel.SAG_R_BLEEDER) / AmplifierModel.SAG_C2;
+    // C2: Vss_new*(1 + T/(Rf*C2) + T/(Rb*C2)) = Vss + T*(Vpp_new/Rf - Ip)/C2
+    const Vss_new = (Vss + T * (Vpp_new / AmplifierModel.SAG_R_FILTER - Ip) / AmplifierModel.SAG_C2)
+                    / this.sagDenomC2;
 
-    this._sagVpp = Math.max(0, Vpp + T * dVpp);
-    this.sagVscreen = Math.max(0, Math.min(this._sagVpp, Vss + T * dVss));
+    this._sagVpp = Math.max(0, Vpp_new);
+    this.sagVscreen = Math.max(0, Math.min(this._sagVpp, Vss_new));
   }
 
   // -------------------------------------------------------------------------
-  // Transistor mode (unchanged)
+  // Transistor mode: asymmetric Class-A with dynamic bias from coupling cap
   // -------------------------------------------------------------------------
 
   private transistorSaturate(x: number): number {
-    const threshold = 0.85;
-    const absX = Math.abs(x);
-    if (absX < threshold) {
-      this._saturationDepth = 0;
-      return x;
+    // Shift input by accumulated DC bias from coupling capacitor
+    const biasedX = x - this.txBiasState;
+
+    // Asymmetric soft clipping: positive rail clips harder (BJT/FET saturation),
+    // negative rail is softer (approaching cutoff)
+    let y: number;
+    if (biasedX > 0) {
+      y = Math.tanh(biasedX);
+    } else {
+      y = -1 + Math.exp(Math.max(-10, biasedX));
     }
-    const excess = absX - threshold;
-    const compressed =
-      threshold + (1 - threshold) * Math.tanh(excess / (1 - threshold));
-    this._saturationDepth = Math.max(0, Math.min(1, (absX - threshold) / (1 - threshold)));
-    return Math.sign(x) * compressed;
+
+    // Update coupling capacitor bias: rectifies signal energy to shift DC operating point.
+    // Recovery via one-pole filter models cap discharging through bias network.
+    const current = (y - biasedX) * 0.1;
+    this.txBiasState = this.txBiasState * this.txBiasAlpha
+                     + current * (1 - this.txBiasAlpha);
+
+    // Saturation depth from both instantaneous clipping and accumulated bias shift
+    const clipDepth = 1 - Math.abs(y) / Math.max(0.001, Math.abs(biasedX));
+    this._saturationDepth = Math.max(0, Math.min(1,
+      Math.max(Math.abs(clipDepth), Math.abs(this.txBiasState) * 5)));
+
+    return y;
   }
 }

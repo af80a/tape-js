@@ -60,6 +60,7 @@ export function GraphHeaderControls() {
         options={[
           { value: '2', label: '2x' },
           { value: '4', label: '4x' },
+          { value: '8', label: '8x' },
         ]}
         value={String(oversample)}
         onChange={handleOversampleChange}

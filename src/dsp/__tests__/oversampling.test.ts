@@ -65,4 +65,64 @@ describe('Oversampler', () => {
       }
     });
   });
+
+  describe('Kaiser window stopband rejection', () => {
+    it('downsample filter rejects frequencies above base Nyquist', () => {
+      const factor = 2;
+      const baseLen = 512;
+      const os = new Oversampler(factor, baseLen);
+
+      // Inject a tone at 0.375 cycles/sample in the oversampled domain,
+      // which is 1.5x the base Nyquist — solidly in the stopband.
+      const osLen = baseLen * factor;
+      const highRate = new Float32Array(osLen);
+      for (let i = 0; i < osLen; i++) {
+        highRate[i] = Math.sin(2 * Math.PI * 0.375 * i);
+      }
+
+      const output = os.downsample(highRate);
+      const steadyState = output.slice(Math.floor(baseLen * 0.5));
+      const maxOutput = Math.max(...Array.from(steadyState).map(Math.abs));
+
+      // Kaiser beta=10 gives ~100dB stopband; expect strong attenuation
+      expect(maxOutput).toBeLessThan(0.01);
+    });
+  });
+
+  describe('block-level processing', () => {
+    it('handles 128-sample blocks correctly (standard AudioWorklet size)', () => {
+      const factor = 2;
+      const os = new Oversampler(factor, 128);
+      const input = new Float32Array(128);
+      for (let i = 0; i < 128; i++) {
+        input[i] = Math.sin(2 * Math.PI * i / 128);
+      }
+
+      const upsampled = os.upsample(input);
+      expect(upsampled.length).toBe(128 * factor);
+
+      const output = os.downsample(upsampled);
+      expect(output.length).toBe(128);
+
+      // Verify no NaN/Infinity
+      for (let i = 0; i < output.length; i++) {
+        expect(Number.isFinite(output[i])).toBe(true);
+      }
+    });
+
+    it('factor 4 block processing produces correct lengths', () => {
+      const factor = 4;
+      const os = new Oversampler(factor, 128);
+      const input = new Float32Array(128);
+      for (let i = 0; i < 128; i++) {
+        input[i] = Math.sin(2 * Math.PI * 3 * i / 128);
+      }
+
+      const upsampled = os.upsample(input);
+      expect(upsampled.length).toBe(128 * factor);
+
+      const output = os.downsample(upsampled);
+      expect(output.length).toBe(128);
+    });
+  });
 });
