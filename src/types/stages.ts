@@ -36,6 +36,7 @@ export interface StageDef {
 
 const fmtHz = (v: number) => v >= 1000 ? `${(v / 1000).toFixed(1)}k` : `${Math.round(v)} Hz`;
 const fmtDb = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(1)} dB`;
+const fmtLinDb = (v: number) => { const db = 20 * Math.log10(v); return `${db >= 0 ? '+' : ''}${db.toFixed(1)} dB`; };
 const fmtPct = (v: number) => `${Math.round(v * 100)}%`;
 const fmtV = (v: number) => `${Math.round(v)}V`;
 
@@ -46,6 +47,7 @@ export const STAGE_DEFS: Record<StageId, StageDef> = {
     id: 'inputXfmr',
     label: 'Input Transformer',
     params: {
+      inputGain: { label: 'Input', min: 0.25, max: 4.0, default: 1.0, step: 0.01, formatValue: fmtLinDb },
       satAmount: { label: 'Core Drive', min: 0, max: 2, default: 1.0, step: 0.01, formatValue: (v) => v.toFixed(2) },
       hfResonance: { label: 'HF Resonance', min: 5000, max: 22000, default: 20000, formatValue: fmtHz },
       hfQ: { label: 'Resonance Q', min: 0.3, max: 2.0, default: 0.7, step: 0.01, formatValue: (v) => v.toFixed(2) },
@@ -74,6 +76,7 @@ export const STAGE_DEFS: Record<StageId, StageDef> = {
       { value: 'IEC', label: 'IEC' },
     ],
     params: {
+      color: { label: 'Color', min: -1, max: 1, default: 0, step: 0.01, formatValue: (v) => v === 0 ? '0' : `${v > 0 ? '+' : ''}${v.toFixed(2)}` },
       _trim: TRIM_PARAM,
     },
   },
@@ -142,6 +145,7 @@ export const STAGE_DEFS: Record<StageId, StageDef> = {
     id: 'outputXfmr',
     label: 'Output Transformer',
     params: {
+      inputGain: { label: 'Input', min: 0.25, max: 4.0, default: 1.0, step: 0.01, formatValue: fmtLinDb },
       satAmount: { label: 'Core Drive', min: 0, max: 2, default: 1.0, step: 0.01, formatValue: (v) => v.toFixed(2) },
       hfResonance: { label: 'HF Resonance', min: 5000, max: 22000, default: 20000, formatValue: fmtHz },
       hfQ: { label: 'Resonance Q', min: 0.3, max: 2.0, default: 0.7, step: 0.01, formatValue: (v) => v.toFixed(2) },

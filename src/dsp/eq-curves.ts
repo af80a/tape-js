@@ -18,23 +18,18 @@
  * the processing chain.
  */
 
-import {
-  BiquadFilter,
-  designFirstOrderSection,
-} from './biquad';
-
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 /** Tape EQ standard. */
-export type EQStandard = 'NAB' | 'IEC';
+export type EQStandard = "NAB" | "IEC";
 
 /** Tape speed in inches per second. */
 export type TapeSpeed = 15 | 7.5 | 3.75;
 
 /** EQ application mode. */
-export type EQMode = 'record' | 'playback';
+export type EQMode = "record" | "playback";
 
 // ---------------------------------------------------------------------------
 // Time constants table
@@ -49,18 +44,18 @@ export type EQMode = 'record' | 'playback';
  */
 interface TimeConstants {
   T1: number | null; // LF time constant in µs
-  T2: number;        // HF time constant in µs
+  T2: number; // HF time constant in µs
 }
 
 const TIME_CONSTANTS: Record<EQStandard, Record<TapeSpeed, TimeConstants>> = {
   NAB: {
-    15:   { T1: 3180, T2: 50 },
-    7.5:  { T1: 3180, T2: 50 },
+    15: { T1: 3180, T2: 50 },
+    7.5: { T1: 3180, T2: 50 },
     3.75: { T1: 3180, T2: 90 },
   },
   IEC: {
-    15:   { T1: null, T2: 35 },
-    7.5:  { T1: null, T2: 70 },
+    15: { T1: null, T2: 35 },
+    7.5: { T1: null, T2: 70 },
     3.75: { T1: null, T2: 90 },
   },
 };
@@ -68,83 +63,127 @@ const TIME_CONSTANTS: Record<EQStandard, Record<TapeSpeed, TimeConstants>> = {
 // ---------------------------------------------------------------------------
 // TapeEQ class
 // ---------------------------------------------------------------------------
-
 /**
- * Tape equalization processor using first-order IIR filters.
+ * State-of-the-art Tape Equalization using Topology-Preserving Transform (TPT).
  *
- * For NAB (two time constants): a single first-order section implements
- * H(s) = (1 + s*T_num)/(1 + s*T_den) via bilinear transform, giving
- * one pole, one zero, and a continuous 6 dB/oct transition.
+ * Instead of standard discrete Biquads with 1-sample feedback delays, this uses
+ * Zero-Delay Feedback (ZDF) to explicitly model the analog RC circuit topology.
  *
- * For IEC (one time constant): a first-order LP (playback) or HP (record)
- * implements the single time constant, with unity DC or HF gain.
- *
- * Both are normalized at 1 kHz for practical signal levels.
+ * Benefits:
+ * 1. Absolute numerical stability, even at extreme low frequencies (NAB 50Hz pole).
+ * 2. Can be modulated continuously at audio rates without clicking (ideal for
+ *    linking EQ cutoff shifting to wow/flutter tape speed modulation).
+ * 3. Exact analog magnitude matching via pole/zero blending.
  */
 export class TapeEQ {
-  private filter: BiquadFilter;
   private normGain: number;
 
-  /**
-   * @param sampleRate Audio sample rate in Hz
-   * @param standard   EQ standard ('NAB' or 'IEC')
-   * @param speed      Tape speed in ips (15, 7.5, or 3.75)
-   * @param mode       'record' (pre-emphasis) or 'playback' (de-emphasis)
-   */
+  // Analog Time Constants
+  private tNum: number;
+  private tDen: number;
+  private readonly tDenStandard: number; // Unmodified T2 pole for color scaling
+  private readonly sampleRate: number;
+
+  // TPT Filter State
+  private s = 0; // State variable (capacitor charge)
+  private g = 0; // Pre-warped conductance
+
   constructor(
     sampleRate: number,
     standard: EQStandard,
     speed: TapeSpeed,
     mode: EQMode,
   ) {
+    this.sampleRate = sampleRate;
     const tc = TIME_CONSTANTS[standard][speed];
 
-    // Convert µs to seconds
     const T2 = tc.T2 * 1e-6;
-
-    // For IEC (T1 = null), we need a limiting time constant to make the
-    // record transfer function proper (realizable). Both record and playback
-    // use the same T_lim so they perfectly complement each other.
-    const tLim = 1 / (2 * Math.PI * 0.45 * sampleRate);
-
-    // Determine numerator and denominator time constants.
-    // NAB: H(s) = (1 + s*T_num) / (1 + s*T_den)
-    //   Record:   T_num = T1, T_den = T2  (HF boost)
-    //   Playback: T_num = T2, T_den = T1  (HF cut)
-    //
-    // IEC: Only T2 exists. Use tLim as the complementary constant.
-    //   Record:   T_num = T2,   T_den = tLim  (HF boost)
-    //   Playback: T_num = tLim, T_den = T2    (HF cut)
+    const tLim = 1 / (2 * Math.PI * 0.45 * sampleRate); // HF limit to prevent Nyquist blowout
     const T1 = tc.T1 !== null ? tc.T1 * 1e-6 : tLim;
 
-    let tNum: number;
-    let tDen: number;
-    if (mode === 'record') {
-      tNum = tc.T1 !== null ? T1 : T2;   // NAB: T1, IEC: T2
-      tDen = tc.T1 !== null ? T2 : tLim; // NAB: T2, IEC: tLim
+    // Determine Numerator (Zero) and Denominator (Pole) time constants
+    if (mode === "record") {
+      this.tNum = tc.T1 !== null ? T1 : T2;
+      this.tDen = tc.T1 !== null ? T2 : tLim;
     } else {
-      tNum = tc.T1 !== null ? T2 : tLim; // NAB: T2, IEC: tLim
-      tDen = tc.T1 !== null ? T1 : T2;   // NAB: T1, IEC: T2
+      this.tNum = tc.T1 !== null ? T2 : tLim;
+      this.tDen = tc.T1 !== null ? T1 : T2;
     }
 
-    this.filter = new BiquadFilter(designFirstOrderSection(tNum, tDen, sampleRate));
+    this.tDenStandard = this.tDen;
 
-    // Normalize at 1 kHz: compute analog magnitude and invert
+    // Normalize at 1 kHz for unity gain
     const w1k = 2 * Math.PI * 1000;
-    const magSq = (1 + (w1k * tNum) ** 2) / (1 + (w1k * tDen) ** 2);
+    const magSq = (1 + (w1k * this.tNum) ** 2) / (1 + (w1k * this.tDen) ** 2);
     this.normGain = 1 / Math.sqrt(magSq);
+
+    this.updateCoefficients();
   }
 
   /**
-   * Process a single sample through the EQ filter.
-   * The normalization gain is applied inline for efficiency.
+   * Updates the TPT filter conductance from the current tDen.
+   * Safe to call every sample — no state discontinuity, no clicks.
+   * Exposed publicly for wow/flutter tape-speed modulation in the processor.
    */
-  process(input: number): number {
-    return this.filter.process(input) * this.normGain;
+  updateCoefficients(): void {
+    // Cutoff frequency derived from the denominator time constant
+    const cutoffHz = 1.0 / (2.0 * Math.PI * this.tDen);
+
+    // Pre-warped analog conductance (g)
+    const wa = 2.0 * Math.PI * cutoffHz;
+    this.g = Math.tan((wa * 0.5) / this.sampleRate);
   }
 
-  /** Reset filter state. */
+  /**
+   * Shift the HF pre-emphasis pole frequency for tonal coloration.
+   *
+   * v = 0   → standard alignment (e.g. NAB T2 = 50 µs → pole at 3.2 kHz)
+   * v = +1  → brighter: pole at 2× frequency (T2 halved, e.g. 25 µs → 6.4 kHz)
+   *            After standard playback de-emphasis: ~+3–4 dB shelf above 3 kHz.
+   * v = -1  → darker:  pole at ½ frequency (T2 doubled, e.g. 100 µs → 1.6 kHz)
+   *            After standard playback de-emphasis: ~-3–4 dB shelf above 1.5 kHz.
+   *
+   * Physically this models deliberate record-head alignment deviation —
+   * what engineers did to give a machine its characteristic tonal signature.
+   */
+  setColor(v: number): void {
+    const scale = Math.pow(2, -Math.max(-1, Math.min(1, v)));
+    this.tDen = this.tDenStandard * scale;
+    // Recompute normGain so 1 kHz reference stays accurate as the pole shifts
+    const w1k = 2 * Math.PI * 1000;
+    const magSq = (1 + (w1k * this.tNum) ** 2) / (1 + (w1k * this.tDen) ** 2);
+    this.normGain = 1 / Math.sqrt(magSq);
+    this.updateCoefficients();
+  }
+
+  /** Process a single sample through the continuous TPT analog model */
+  process(input: number): number {
+    // 1. Calculate the voltage across the modeled RC capacitor
+    const v = (input - this.s) * (this.g / (1.0 + this.g));
+
+    // 2. Extract the continuous low-pass and high-pass states
+    const yLP = v + this.s; // Low-pass output
+    const yHP = input - yLP; // High-pass output (exactly complementary)
+
+    // 3. Update the analog capacitor state (Trapezoidal integration)
+    this.s += 2.0 * v;
+
+    // Anti-denormalization for absolute silence
+    if (Math.abs(this.s) < 1e-12) this.s = 0;
+
+    // 4. Construct the complex EQ Curve
+    // H(s) = (1 + s*T_num) / (1 + s*T_den)
+    // In continuous RC logic, this is equivalent to blending the LP and HP outputs
+    // scaled by the ratio of their time constants.
+    const hfBlendRatio = this.tNum / this.tDen;
+
+    const output = yLP + hfBlendRatio * yHP;
+
+    return output * this.normGain;
+  }
+
+  /** Reset the analog capacitor state. */
   reset(): void {
-    this.filter.reset();
+    this.s = 0;
   }
 }

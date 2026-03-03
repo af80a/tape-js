@@ -6,7 +6,6 @@ export type WorkletMessage =
   | { type: 'set-speed'; value: number }
   | { type: 'set-oversample'; value: number }
   | { type: 'set-bypass'; value: boolean }
-  | { type: 'set-autogain'; value: boolean }
   | { type: 'set-stage-bypass'; stageId: StageId; value: boolean }
   | { type: 'set-stage-variant'; stageId: StageId; value: string }
   | { type: 'set-stage-param'; stageId: StageId; param: string; value: number }

@@ -63,7 +63,14 @@
   text-transform: uppercase;
 }
 
-.stage-node__bypass {
+.stage-node__header-buttons {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.stage-node__bypass,
+.stage-node__link {
   background: #1a1f29;
   color: #9198a5;
   border: 1px solid #333a47;
@@ -75,7 +82,8 @@
   letter-spacing: 0.5px;
 }
 
-.stage-node__bypass:hover {
+.stage-node__bypass:hover,
+.stage-node__link:hover {
   border-color: #5f8f8a;
 }
 
@@ -83,6 +91,12 @@
   background: #7a2d33;
   border-color: #9d3a43;
   color: #fff;
+}
+
+.stage-node__link--active {
+  background: #1a3d34;
+  border-color: #2d7a68;
+  color: #5eb89e;
 }
 
 .stage-node__content {

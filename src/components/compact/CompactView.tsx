@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useCallback } from 'react';
 import { useAudioEngine } from '../../stores/audio-engine';
 import { useStageParams } from '../../stores/stage-params';
 import { Knob } from '../controls/Knob';
@@ -36,21 +36,11 @@ export function CompactView({ onPresetChange }: CompactViewProps) {
     postMessage({ type: 'clear-param-overrides' });
   }, [postMessage]);
 
-  const [autoGain, setAutoGain] = useState(false);
-
   const handleBypass = useCallback(
     (v: boolean) => {
       setGlobalBypass(v);
     },
     [setGlobalBypass],
-  );
-
-  const handleAutoGain = useCallback(
-    (v: boolean) => {
-      setAutoGain(v);
-      postMessage({ type: 'set-autogain', value: v });
-    },
-    [postMessage],
   );
 
   const handlePresetChange = useCallback(
@@ -134,15 +124,6 @@ export function CompactView({ onPresetChange }: CompactViewProps) {
             className="bypass-btn"
             active={bypassed}
             onToggle={handleBypass}
-          />
-        </div>
-        <div className="compact-button-control">
-          <div className="select-label">Match</div>
-          <ToggleButton
-            label="AUTO"
-            className="autogain-btn"
-            active={autoGain}
-            onToggle={handleAutoGain}
           />
         </div>
         <Select

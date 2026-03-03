@@ -194,20 +194,6 @@ body:has(.app-root--graph) {
   color: #fff;
 }
 
-.autogain-btn {
-  padding: 8px 18px;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 1px;
-  align-self: center;
-}
-
-.autogain-btn.active {
-  background: #2e6a63;
-  border-color: #3f827a;
-  color: #fff;
-}
-
 /* --------------------------------------------------------------------------
    Controls row
    -------------------------------------------------------------------------- */

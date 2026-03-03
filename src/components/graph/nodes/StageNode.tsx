@@ -1,4 +1,4 @@
-import { memo, useCallback } from 'react';
+import { memo, useCallback, useState } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import { type StageId, type StageDef } from '../../../types/stages';
 import { useStageParams } from '../../../stores/stage-params';
@@ -26,6 +26,9 @@ export const StageNode = memo(function StageNode({ data }: NodeProps) {
   // Per-stage meter levels: [input, output]
   const meterLevels = useAudioEngine((s) => s.stageMeters[stageId]);
 
+  const [linked, setLinked] = useState(false);
+  const hasInputGain = 'inputGain' in def.params;
+
   const handleBypass = useCallback(() => {
     setStageBypass(stageId, !state.bypassed);
   }, [stageId, state.bypassed, setStageBypass]);
@@ -35,22 +38,46 @@ export const StageNode = memo(function StageNode({ data }: NodeProps) {
     [stageId, setStageVariant],
   );
 
+  const handleParamChange = useCallback((key: string, v: number) => {
+    if (linked && key === 'inputGain') {
+      const inputGainDef = def.params['inputGain'];
+      const prevGain = state.params['inputGain'] ?? inputGainDef.default;
+      const deltaDb = 20 * Math.log10(v / prevGain);
+      const prevTrim = state.params['_trim'] ?? 0;
+      const newTrim = Math.max(-12, Math.min(12, prevTrim - deltaDb));
+      setStageParam(stageId, '_trim', newTrim);
+    }
+    setStageParam(stageId, key, v);
+  }, [linked, stageId, state.params, def.params, setStageParam]);
+
   const paramEntries = Object.entries(def.params);
 
   return (
     <div className={`stage-node ${state.bypassed ? 'stage-node--bypassed' : ''}`}>
-      <Handle type="target" position={Position.Left} id="left" />
-      <Handle type="target" position={Position.Top} id="top" />
+      <Handle type="target" position={Position.Left} id="target-left" />
+      <Handle type="source" position={Position.Left} id="source-left" />
+      <Handle type="target" position={Position.Top} id="target-top" />
 
       {/* Header */}
       <div className="stage-node__header">
         <span className="stage-node__title">{label}</span>
-        <button
-          className={`stage-node__bypass nopan nodrag ${state.bypassed ? 'stage-node__bypass--active' : ''}`}
-          onClick={handleBypass}
-        >
-          BYP
-        </button>
+        <div className="stage-node__header-buttons">
+          {hasInputGain && (
+            <button
+              className={`stage-node__link nopan nodrag ${linked ? 'stage-node__link--active' : ''}`}
+              onClick={() => setLinked((l) => !l)}
+              title="Link input gain to trim — moving Input compensates Trim to keep level constant"
+            >
+              LNK
+            </button>
+          )}
+          <button
+            className={`stage-node__bypass nopan nodrag ${state.bypassed ? 'stage-node__bypass--active' : ''}`}
+            onClick={handleBypass}
+          >
+            BYP
+          </button>
+        </div>
       </div>
 
       {/* Content row: input meter | body | output meter */}
@@ -84,7 +111,7 @@ export const StageNode = memo(function StageNode({ data }: NodeProps) {
                   value={state.params[key] ?? paramDef.default}
                   step={paramDef.step}
                   formatValue={paramDef.formatValue}
-                  onChange={(v) => setStageParam(stageId, key, v)}
+                  onChange={(v) => handleParamChange(key, v)}
                 />
             ))}
           </div>
@@ -95,8 +122,9 @@ export const StageNode = memo(function StageNode({ data }: NodeProps) {
         </div>
       </div>
 
-      <Handle type="source" position={Position.Right} id="right" />
-      <Handle type="source" position={Position.Bottom} id="bottom" />
+      <Handle type="source" position={Position.Right} id="source-right" />
+      <Handle type="target" position={Position.Right} id="target-right" />
+      <Handle type="source" position={Position.Bottom} id="source-bottom" />
     </div>
   );
 });

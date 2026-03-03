@@ -210,7 +210,8 @@ class TapeProcessor extends AudioWorkletProcessor {
     for (const dsp of this.channels) {
       switch (stageId) {
         case 'inputXfmr':
-          if (param === 'satAmount') dsp.inputXfmr.reconfigure({ satAmount: value });
+          if (param === 'inputGain') dsp.inputXfmr.reconfigure({ inputGain: value });
+          else if (param === 'satAmount') dsp.inputXfmr.reconfigure({ satAmount: value });
           else if (param === 'hfResonance') dsp.inputXfmr.reconfigure({ hfResonance: value });
           else if (param === 'hfQ') dsp.inputXfmr.reconfigure({ hfQ: value });
           else if (param === 'lfCutoff') dsp.inputXfmr.reconfigure({ lfCutoff: value });
@@ -218,6 +219,9 @@ class TapeProcessor extends AudioWorkletProcessor {
         case 'recordAmp':
           if (param === 'drive') dsp.recordAmp.setDrive(value);
           else if (param === 'Vpp') dsp.recordAmp.setVpp(value);
+          break;
+        case 'recordEQ':
+          if (param === 'color') dsp.recordEQ.setColor(value);
           break;
         case 'bias':
           if (param === 'level') {
@@ -247,7 +251,8 @@ class TapeProcessor extends AudioWorkletProcessor {
           else if (param === 'Vpp') dsp.playbackAmp.setVpp(value);
           break;
         case 'outputXfmr':
-          if (param === 'satAmount') dsp.outputXfmr.reconfigure({ satAmount: value });
+          if (param === 'inputGain') dsp.outputXfmr.reconfigure({ inputGain: value });
+          else if (param === 'satAmount') dsp.outputXfmr.reconfigure({ satAmount: value });
           else if (param === 'hfResonance') dsp.outputXfmr.reconfigure({ hfResonance: value });
           else if (param === 'hfQ') dsp.outputXfmr.reconfigure({ hfQ: value });
           else if (param === 'lfCutoff') dsp.outputXfmr.reconfigure({ lfCutoff: value });
@@ -455,7 +460,7 @@ class TapeProcessor extends AudioWorkletProcessor {
         dsp.hysteresis.setBias(bypassBias ? 0 : (ov.get('bias.level') ?? biasParam));
       }
       if (!bypassRecordAmp) dsp.recordAmp.setDrive(ov.get('recordAmp.drive') ?? ampDrive);
-      if (!bypassPlaybackAmp) dsp.playbackAmp.setDrive(ov.get('playbackAmp.drive') ?? ampDrive * 0.8);
+      if (!bypassPlaybackAmp) dsp.playbackAmp.setDrive(ov.get('playbackAmp.drive') ?? ampDrive);
       if (!bypassTransport) {
         dsp.transport.setWow(ov.get('transport.wow') ?? wow);
         dsp.transport.setFlutter(ov.get('transport.flutter') ?? flutter);
