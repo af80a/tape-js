@@ -319,3 +319,4 @@
     border-radius: 10px;
   }
 }
+.graph-header-controls__headroom { display: flex; align-items: center; gap: 8px; margin: 0 16px; } .graph-header-controls__headroom input { width: 80px; } .headroom-value { font-family: monospace; font-size: 12px; color: #888; }

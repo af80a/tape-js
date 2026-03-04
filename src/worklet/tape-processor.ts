@@ -81,6 +81,7 @@ class TapeProcessor extends AudioWorkletProcessor {
       { name: 'wow',        defaultValue: 0.15, minValue: 0,    maxValue: 1,   automationRate: 'k-rate' },
       { name: 'flutter',    defaultValue: 0.1,  minValue: 0,    maxValue: 1,   automationRate: 'k-rate' },
       { name: 'hiss',       defaultValue: 0.05, minValue: 0,    maxValue: 1,   automationRate: 'k-rate' },
+      { name: 'headroom',   defaultValue: 18.0, minValue: 0,    maxValue: 36,  automationRate: 'k-rate' },
       { name: 'outputGain', defaultValue: 1.0,  minValue: 0.0625, maxValue: 16.0, automationRate: 'k-rate' },
     ];
   }
@@ -470,10 +471,16 @@ class TapeProcessor extends AudioWorkletProcessor {
     const wow        = parameters['wow'][0];
     const flutter    = parameters['flutter'][0];
     const hiss       = parameters['hiss'][0];
+    const headroom   = parameters['headroom'][0];
     const outputGain = this.stageParamOverrides.get('output.outputGain') ?? parameters['outputGain'][0];
 
     const inputBlock = this.inputBlock;
     const factor = this.oversampleFactor > 1 ? this.oversampleFactor : 1;
+
+    // Calculate Headroom scalars (0 VU calibration)
+    const headroomLinear = Math.pow(10, headroom / 20);
+    const inScalar  = headroomLinear;
+    const outScalar = 1.0 / headroomLinear;
 
     // Cache ballistics coefficients as locals for inner loop
     const attackCoeff = this.vuAttackCoeff;
@@ -622,9 +629,10 @@ class TapeProcessor extends AudioWorkletProcessor {
 
       // ---- INPUT PREPARATION (base rate) ----
       for (let i = 0; i < blockSize; i++) {
-        const x = inp[i] * inputGain;
-        inputBlock[i] = x;
-        updateStageMeter(slInputXfmr, 0, x);
+        // Apply input gain and convert from digital dBFS to analog 0 VU reference level
+        const analogIn = inp[i] * inputGain * inScalar;
+        inputBlock[i] = analogIn;
+        updateStageMeter(slInputXfmr, 0, analogIn);
       }
 
       // ---- PHASE 1: RECORD CHAIN (block oversampled) ----
@@ -845,19 +853,27 @@ class TapeProcessor extends AudioWorkletProcessor {
         if (!Number.isFinite(x)) x = 0;
         x = Math.max(-2, Math.min(2, x));
 
-        updateStageMeter(slOutput, 0, x);
+        // x is at analog levels. Apply output gain.
+        const analogOut = x * outputGain;
+        updateStageMeter(slOutput, 0, analogOut);
+
         const globalTarget = this.bypassed ? 1 : 0;
         if (bypassFade !== globalTarget) {
           bypassFade += globalTarget > bypassFade ? fadeStep : -fadeStep;
           bypassFade = Math.max(0, Math.min(1, bypassFade));
         }
-        out[i] = inp[i] * bypassFade + (x * outputGain) * (1 - bypassFade);
-        updateStageMeter(slOutput, 1, out[i]);
 
-        const power = out[i] * out[i];
+        // Convert analog back to digital, applying global bypass crossfade
+        const digitalOut = analogOut * outScalar;
+        out[i] = inp[i] * bypassFade + digitalOut * (1 - bypassFade);
+
+        // Meter the analog signal so the UI VU meter reads correctly around 0 VU
+        updateStageMeter(slOutput, 1, analogOut);
+
+        const power = analogOut * analogOut;
         const vuCoeff = power > this.vuPower[ch] ? attackCoeff : releaseCoeff;
         this.vuPower[ch] = vuCoeff * this.vuPower[ch] + (1 - vuCoeff) * power;
-        this.peakHold[ch] = Math.max(Math.abs(out[i]), this.peakHold[ch] * peakRelCoeff);
+        this.peakHold[ch] = Math.max(Math.abs(analogOut), this.peakHold[ch] * peakRelCoeff);
       }
     }
 

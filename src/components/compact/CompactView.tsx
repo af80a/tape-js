@@ -14,6 +14,10 @@ function fmtPct(v: number): string {
   return `${Math.round(v * 100)}%`;
 }
 
+function fmtRef(v: number): string {
+  return `-${v.toFixed(0)} dBFS`;
+}
+
 interface CompactViewProps {
   onPresetChange: (preset: string) => void;
 }
@@ -201,6 +205,11 @@ export function CompactView({ onPresetChange }: CompactViewProps) {
           label="HISS" min={0} max={1} value={0.05}
           formatValue={fmtPct}
           onChange={(v) => { clearOverrides(); setParam('hiss', v); }}
+        />
+        <Knob
+          label="HEADROOM" min={6} max={36} value={18} step={1}
+          formatValue={fmtRef}
+          onChange={(v) => { clearOverrides(); setParam('headroom', v); }}
         />
         <Knob
           label="OUTPUT" min={0.25} max={4} value={1}

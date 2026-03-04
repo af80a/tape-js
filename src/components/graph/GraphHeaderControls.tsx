@@ -33,6 +33,14 @@ export function GraphHeaderControls() {
     [setOversample],
   );
 
+  const headroom = useAudioEngine((s) => s.headroom);
+  const setHeadroom = useAudioEngine((s) => s.setHeadroom);
+
+  const handleHeadroomChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => setHeadroom(parseFloat(e.target.value)),
+    [setHeadroom]
+  );
+
   return (
     <div className="graph-header-controls">
       <Select
@@ -65,6 +73,19 @@ export function GraphHeaderControls() {
         value={String(oversample)}
         onChange={handleOversampleChange}
       />
+      <div className="graph-header-controls__headroom">
+        <span className="select-label">HEADROOM</span>
+        <input 
+          type="range" 
+          min="6" 
+          max="36" 
+          step="1" 
+          value={headroom} 
+          onChange={handleHeadroomChange} 
+          title={`Headroom: -${headroom} dBFS`}
+        />
+        <span className="headroom-value">-{headroom}</span>
+      </div>
       <ToggleButton
         label="GLOBAL BYPASS"
         className="bypass-btn graph-header-controls__bypass"

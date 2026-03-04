@@ -40,6 +40,7 @@ interface AudioEngineState {
   formula: string;
   ampType: 'tube' | 'transistor';
   bump: string;
+  headroom: number;
   currentTime: number;
   duration: number;
   vuDb: number[];
@@ -63,6 +64,7 @@ interface AudioEngineState {
   setFormula: (formula: string) => void;
   setAmpType: (ampType: 'tube' | 'transistor') => void;
   setBump: (bump: string) => void;
+  setHeadroom: (headroom: number) => void;
   setGlobalBypass: (bypassed: boolean) => void;
   setParam: (name: string, value: number) => void;
   postMessage: (msg: Parameters<WorkletBridge['postMessage']>[0]) => void;
@@ -83,6 +85,7 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
   formula: '456',
   ampType: 'transistor',
   bump: 'flat',
+  headroom: 18,
   currentTime: 0,
   duration: 0,
   vuDb: [-20, -20],
@@ -109,6 +112,7 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
     bridge.postMessage({ type: 'set-amp-type', value: state.ampType });
     bridge.postMessage({ type: 'set-bump', value: state.bump });
     bridge.postMessage({ type: 'set-bypass', value: state.globalBypassed });
+    bridge.setParam('headroom', state.headroom, 0);
 
     bridge.onMessage((msg) => {
       if (msg.type === 'meters') {
@@ -204,6 +208,11 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
   setBump: (bump: string) => {
     get().bridge?.postMessage({ type: 'set-bump', value: bump });
     set({ bump });
+  },
+
+  setHeadroom: (headroom: number) => {
+    get().bridge?.setParam('headroom', headroom, get().audioCtx?.currentTime ?? 0);
+    set({ headroom });
   },
 
   setGlobalBypass: (bypassed: boolean) => {
