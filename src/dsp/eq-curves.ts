@@ -79,10 +79,10 @@ export class TapeEQ {
   private normGain: number = 1;
 
   // Analog Time Constants
-  private tNum: number;
-  private tDen: number;
-  private readonly tNumStandard: number;
-  private readonly tDenStandard: number; // Unmodified T2 pole for color scaling
+  private tNum!: number;
+  private tDen!: number;
+  private tNumStandard!: number;
+  private tDenStandard!: number; // Unmodified T2 pole for color scaling
   private readonly isIecRecord: boolean;
   private readonly sampleRate: number;
 
@@ -91,6 +91,10 @@ export class TapeEQ {
   private g = 0; // Pre-warped conductance
   private hfBlendRatio = 0;
 
+  private standard: EQStandard;
+  private speed: TapeSpeed;
+  private mode: EQMode;
+
   constructor(
     sampleRate: number,
     standard: EQStandard,
@@ -98,16 +102,32 @@ export class TapeEQ {
     mode: EQMode,
   ) {
     this.sampleRate = sampleRate;
-    const tc = TIME_CONSTANTS[standard][speed];
-
-    const T2 = tc.T2 * 1e-6;
-    const tLim = 1 / (2 * Math.PI * 0.45 * sampleRate); // HF limit to prevent Nyquist blowout
-    const T1 = tc.T1 !== null ? tc.T1 * 1e-6 : tLim;
-
+    this.standard = standard;
+    this.speed = speed;
+    this.mode = mode;
     this.isIecRecord = (standard === 'IEC' && mode === 'record');
 
+    this.calculateTimeConstants();
+  }
+
+  /**
+   * Set tape speed to update EQ time constants without recreating the filter.
+   */
+  setSpeed(speed: TapeSpeed): void {
+    if (this.speed === speed) return;
+    this.speed = speed;
+    this.calculateTimeConstants();
+  }
+
+  private calculateTimeConstants(): void {
+    const tc = TIME_CONSTANTS[this.standard][this.speed];
+
+    const T2 = tc.T2 * 1e-6;
+    const tLim = 1 / (2 * Math.PI * 0.45 * this.sampleRate); // HF limit to prevent Nyquist blowout
+    const T1 = tc.T1 !== null ? tc.T1 * 1e-6 : tLim;
+
     // Determine Numerator (Zero) and Denominator (Pole) time constants
-    if (mode === "record") {
+    if (this.mode === "record") {
       this.tNum = tc.T1 !== null ? T1 : T2;
       this.tDen = tc.T1 !== null ? T2 : tLim;
     } else {
@@ -115,7 +135,9 @@ export class TapeEQ {
       this.tDen = tc.T1 !== null ? T1 : T2;
     }
 
+    // @ts-ignore - allow readonly override during setup
     this.tNumStandard = this.tNum;
+    // @ts-ignore
     this.tDenStandard = this.tDen;
 
     this.updateCoefficients();
@@ -160,11 +182,15 @@ export class TapeEQ {
    * what engineers did to give a machine its characteristic tonal signature.
    */
   setColor(v: number): void {
-    const scale = Math.pow(2, -Math.max(-1, Math.min(1, v)));
+    const clamped = Math.max(-1, Math.min(1, v));
     if (this.isIecRecord) {
-      this.tNum = this.tNumStandard * scale;
+      // IEC record: tNum IS the HF boost zero. Increasing it lowers the zero
+      // frequency → more of the audio band gets boosted → brighter.
+      this.tNum = this.tNumStandard * Math.pow(2, clamped);
     } else {
-      this.tDen = this.tDenStandard * scale;
+      // NAB / IEC playback: tDen is the HF pole. Decreasing it raises the pole
+      // frequency → HF boost extends further → brighter.
+      this.tDen = this.tDenStandard * Math.pow(2, -clamped);
     }
     this.updateCoefficients();
   }

@@ -33,12 +33,17 @@ export class HeadModel {
   private bump: BiquadFilter;
   private dip: BiquadFilter;
   private readonly sampleRate: number;
-  private readonly tapeSpeedIps: number;
+  private tapeSpeedIps: number;
 
   // FIR loss filter state
   private lossKernel: Float64Array;
   private lossState: Float64Array;
   private readonly lossOrder: number;
+  
+  // Options cache
+  private readonly gapWidth: number;
+  private readonly spacing: number;
+  private bumpGainDb: number;
 
   /**
    * @param sampleRate    Audio sample rate in Hz
@@ -49,13 +54,17 @@ export class HeadModel {
     this.sampleRate = sampleRate;
     this.tapeSpeedIps = tapeSpeedIps;
     this.lossOrder = LOSS_FIR_ORDER;
+    
+    this.gapWidth = options?.gapWidth ?? 2e-6;
+    this.spacing = options?.spacing ?? 0.5e-6;
+    this.bumpGainDb = options?.bumpGainDb ?? 3.0;
+
     const maxFreq = 0.45 * sampleRate;
 
     // Head bump: peaking boost at tapeSpeed * 3.67 Hz
     // Bump frequency derives from pole piece contact length: f = v / (2*L).
     // The constant 3.67 Hz/ips corresponds to L ≈ 3.5 mm pole piece length.
     const bumpFreq = Math.min(tapeSpeedIps * 3.67, maxFreq);
-    const bumpGainDb = options?.bumpGainDb ?? 3.0;
 
     // Bump Q scales with tape speed: lower speeds produce broader bumps
     // because the wavelength interaction with the pole piece is less selective.
@@ -65,7 +74,7 @@ export class HeadModel {
     //   30 ips  → Q ≈ 2.5 (narrow)
     const bumpQ = 1.0 + (tapeSpeedIps / 30) * 1.5;
     this.bump = new BiquadFilter(
-      designPeaking(bumpFreq, sampleRate, bumpGainDb, bumpQ),
+      designPeaking(bumpFreq, sampleRate, this.bumpGainDb, bumpQ),
     );
 
     // Dip at twice the bump frequency (when wavelength = pole piece length,
@@ -77,11 +86,26 @@ export class HeadModel {
     );
 
     // FIR loss filter: sinc gap loss + exponential spacing loss
-    const gapWidth = options?.gapWidth ?? 2e-6;
-    const spacing = options?.spacing ?? 0.5e-6;
     this.lossKernel = new Float64Array(2 * this.lossOrder + 1);
     this.lossState = new Float64Array(2 * this.lossOrder + 1);
-    this.computeLossKernel(gapWidth, spacing);
+    this.computeLossKernel(this.gapWidth, this.spacing);
+  }
+
+  /** Update tape speed, recalculating filters dynamically */
+  setSpeed(tapeSpeedIps: number): void {
+    if (this.tapeSpeedIps === tapeSpeedIps) return;
+    this.tapeSpeedIps = tapeSpeedIps;
+    
+    const maxFreq = 0.45 * this.sampleRate;
+    const bumpFreq = Math.min(tapeSpeedIps * 3.67, maxFreq);
+    const bumpQ = 1.0 + (tapeSpeedIps / 30) * 1.5;
+    this.bump.updateCoeffs(designPeaking(bumpFreq, this.sampleRate, this.bumpGainDb, bumpQ));
+
+    const dipFreq = Math.min(bumpFreq * 2, maxFreq);
+    const dipQ = 1.0 + (tapeSpeedIps / 30) * 0.8;
+    this.dip.updateCoeffs(designPeaking(dipFreq, this.sampleRate, -1.5, dipQ));
+
+    this.computeLossKernel(this.gapWidth, this.spacing);
   }
 
   /**

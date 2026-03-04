@@ -16,8 +16,7 @@ export interface MachinePreset {
   inputTransformer: { lfCutoff: number; hfResonance: number; hfQ: number; satAmount: number; asymmetry: number };
   outputTransformer: { lfCutoff: number; hfResonance: number; hfQ: number; satAmount: number; asymmetry: number };
   tubeCircuit?: TubeCircuitParams;
-  /** Tape stock magnetic properties. */
-  tapeFormulation: TapeFormulation;
+  defaultFormula: string;
   drive: number;
   saturation: number;
   recordAmpDrive: number;
@@ -33,6 +32,12 @@ export interface MachinePreset {
   hissDefault: number;
 }
 
+export const FORMULAS: Record<string, TapeFormulation> = {
+  '456': { k: 0.47, c: 0.1, alpha: 1.8e-3 },  // Ampex 456
+  '499': { k: 0.55, c: 0.15, alpha: 1.0e-3 }, // Quantegy 499
+  '900': { k: 0.50, c: 0.05, alpha: 2.5e-3 }, // BASF 900
+};
+
 export const PRESETS: Record<string, MachinePreset> = {
   studer: {
     name: 'Studer A810',
@@ -45,8 +50,7 @@ export const PRESETS: Record<string, MachinePreset> = {
       Rp: 100e3, Rg: 1e6, Rk: 1.5e3,
       Cc_in: 22e-9, Cc_out: 100e-9, Ck: 25e-6, Vpp: 250,
     },
-    // Quantegy GP9 — modern formulation, extended headroom
-    tapeFormulation: { k: 0.55, c: 0.1, alpha: 1.6e-3 },
+    defaultFormula: '900',
     drive: 0.4,
     saturation: 0.5,
     recordAmpDrive: 0.5,
@@ -70,8 +74,7 @@ export const PRESETS: Record<string, MachinePreset> = {
       Rp: 220e3, Rg: 470e3, Rk: 1.8e3,
       Cc_in: 47e-9, Cc_out: 220e-9, Ck: 22e-6, Vpp: 300,
     },
-    // Ampex 456 — classic 1970s formulation, warm saturation
-    tapeFormulation: { k: 0.47, c: 0.1, alpha: 1.8e-3 },
+    defaultFormula: '456',
     drive: 0.5,
     saturation: 0.6,
     recordAmpDrive: 0.6,
@@ -91,8 +94,7 @@ export const PRESETS: Record<string, MachinePreset> = {
     // Generic steel-core transformers — more colored, higher asymmetry
     inputTransformer: { lfCutoff: 22, hfResonance: 18000, hfQ: 0.9, satAmount: 1.1, asymmetry: 0.025 },
     outputTransformer: { lfCutoff: 20, hfResonance: 17000, hfQ: 0.8, satAmount: 0.9, asymmetry: 0.025 },
-    // Mixed stock — middle-ground formulation
-    tapeFormulation: { k: 0.50, c: 0.1, alpha: 1.5e-3 },
+    defaultFormula: '499',
     drive: 0.55,
     saturation: 0.55,
     recordAmpDrive: 0.55,

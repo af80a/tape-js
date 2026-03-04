@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { STAGE_IDS, STAGE_DEFS, type StageId } from '../types/stages';
-import { PRESETS, type MachinePreset } from '../dsp/presets';
+import { PRESETS, FORMULAS, type MachinePreset } from '../dsp/presets';
 import { useAudioEngine } from './audio-engine';
 
 interface StageState {
@@ -56,8 +56,9 @@ function buildStageStates(preset: MachinePreset): Record<StageId, StageState> {
 
   stages.hysteresis.params.drive = preset.drive;
   stages.hysteresis.params.saturation = preset.saturation;
-  stages.hysteresis.params.k = preset.tapeFormulation.k;
-  stages.hysteresis.params.c = preset.tapeFormulation.c;
+  const f = FORMULAS[preset.defaultFormula] ?? FORMULAS['456'];
+  stages.hysteresis.params.k = f.k;
+  stages.hysteresis.params.c = f.c;
 
   stages.head.params.bumpGainDb = preset.bumpGainDb;
 

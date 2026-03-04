@@ -14,7 +14,7 @@ import { HeadModel } from '../dsp/head-model';
 import { TapeNoise } from '../dsp/noise';
 import { TransportModel } from '../dsp/transport';
 import { Oversampler } from '../dsp/oversampling';
-import { PRESETS } from '../dsp/presets';
+import { PRESETS, FORMULAS } from '../dsp/presets';
 import type { MachinePreset } from '../dsp/presets';
 
 // ---------------------------------------------------------------------------
@@ -81,7 +81,8 @@ class TapeProcessor extends AudioWorkletProcessor {
       { name: 'wow',        defaultValue: 0.15, minValue: 0,    maxValue: 1,   automationRate: 'k-rate' },
       { name: 'flutter',    defaultValue: 0.1,  minValue: 0,    maxValue: 1,   automationRate: 'k-rate' },
       { name: 'hiss',       defaultValue: 0.05, minValue: 0,    maxValue: 1,   automationRate: 'k-rate' },
-      { name: 'headroom',   defaultValue: 18.0, minValue: 0,    maxValue: 36,  automationRate: 'k-rate' },
+      { name: 'color',      defaultValue: 0,    minValue: -1,   maxValue: 1,   automationRate: 'k-rate' },
+      { name: 'headroom',   defaultValue: 18.0, minValue: 6,    maxValue: 36,  automationRate: 'k-rate' },
       { name: 'outputGain', defaultValue: 1.0,  minValue: 0.0625, maxValue: 16.0, automationRate: 'k-rate' },
     ];
   }
@@ -187,8 +188,13 @@ class TapeProcessor extends AudioWorkletProcessor {
         this.stageGainLin.clear();
         this.initDSP(2, this.currentPreset, this.oversampleFactor, this.tapeSpeed);
       } else if (type === 'set-speed') {
-        this.tapeSpeed = (data.value as TapeSpeed) ?? 15;
-        this.initDSP(2, this.currentPreset, this.oversampleFactor, this.tapeSpeed);
+        const speed = (data.value as TapeSpeed) ?? 15;
+        this.tapeSpeed = speed;
+        for (const dsp of this.channels) {
+          dsp.recordEQ.setSpeed(speed);
+          dsp.playbackEQ.setSpeed(speed);
+          dsp.head.setSpeed(speed);
+        }
       } else if (type === 'set-oversample') {
         this.oversampleFactor = (data.value as number) ?? 2;
         this.initDSP(2, this.currentPreset, this.oversampleFactor, this.tapeSpeed);
@@ -222,17 +228,12 @@ class TapeProcessor extends AudioWorkletProcessor {
   }
 
   private applyFormula(formula: string): void {
+    const f = FORMULAS[formula];
+    if (!f) return;
     for (const dsp of this.channels) {
-      if (formula === '456') { // Ampex 456 - standard punchy
-        dsp.hysteresis.setBaseC(0.1);
-        dsp.hysteresis.setAlpha(1.6e-3);
-      } else if (formula === '499') { // Quantegy 499 - high output/cleaner
-        dsp.hysteresis.setBaseC(0.15);
-        dsp.hysteresis.setAlpha(1.0e-3);
-      } else if (formula === '900') { // BASF 900 - dark/fat saturation
-        dsp.hysteresis.setBaseC(0.05);
-        dsp.hysteresis.setAlpha(2.5e-3);
-      }
+      dsp.hysteresis.setK(f.k);
+      dsp.hysteresis.setBaseC(f.c);
+      dsp.hysteresis.setAlpha(f.alpha);
     }
   }
 
@@ -385,9 +386,12 @@ class TapeProcessor extends AudioWorkletProcessor {
       const hysteresis = new HysteresisProcessor(fs * oversampleFactor);
       hysteresis.setDrive(preset.drive);
       hysteresis.setSaturation(preset.saturation);
-      hysteresis.setK(preset.tapeFormulation.k);
-      hysteresis.setBaseC(preset.tapeFormulation.c);
-      hysteresis.setAlpha(preset.tapeFormulation.alpha);
+      
+      const formulaName = this.currentFormula ?? preset.defaultFormula;
+      const f = FORMULAS[formulaName] ?? FORMULAS['456'];
+      hysteresis.setK(f.k);
+      hysteresis.setBaseC(f.c);
+      hysteresis.setAlpha(f.alpha);
 
       const recordOversampler = new Oversampler(oversampleFactor, 128);
       const head = new HeadModel(fs, speed, {
@@ -471,6 +475,7 @@ class TapeProcessor extends AudioWorkletProcessor {
     const wow        = parameters['wow'][0];
     const flutter    = parameters['flutter'][0];
     const hiss       = parameters['hiss'][0];
+    const color      = parameters['color'][0];
     const headroom   = parameters['headroom'][0];
     const outputGain = this.stageParamOverrides.get('output.outputGain') ?? parameters['outputGain'][0];
 
@@ -478,9 +483,14 @@ class TapeProcessor extends AudioWorkletProcessor {
     const factor = this.oversampleFactor > 1 ? this.oversampleFactor : 1;
 
     // Calculate Headroom scalars (0 VU calibration)
-    const headroomLinear = Math.pow(10, headroom / 20);
-    const inScalar  = headroomLinear;
-    const outScalar = 1.0 / headroomLinear;
+    // More headroom → less drive (more breathing room before saturation).
+    // At the default (18 dB): inScalar = 10^((36-18)/20) ≈ 7.94, identical to the
+    // previous formula, so existing behaviour at default is preserved.
+    // At max headroom (36 dB): inScalar = 1 (no gain, cleanest).
+    // At min headroom  (6 dB): inScalar ≈ 31.6 (heaviest drive).
+    const maxHeadroomDb = 36; // matches parameterDescriptors maxValue
+    const inScalar  = Math.pow(10, (maxHeadroomDb - headroom) / 20);
+    const outScalar = 1.0 / inScalar;
 
     // Cache ballistics coefficients as locals for inner loop
     const attackCoeff = this.vuAttackCoeff;
@@ -622,6 +632,7 @@ class TapeProcessor extends AudioWorkletProcessor {
       dsp.hysteresis.setDrive(ov.get('hysteresis.drive') ?? drive);
       dsp.hysteresis.setSaturation(ov.get('hysteresis.saturation') ?? saturation);
       dsp.recordAmp.setDrive(ov.get('recordAmp.drive') ?? ampDrive);
+      dsp.recordEQ.setColor(ov.get('recordEQ.color') ?? color);
       dsp.playbackAmp.setDrive(ov.get('playbackAmp.drive') ?? ampDrive * 0.8);
       dsp.transport.setWow(ov.get('transport.wow') ?? wow);
       dsp.transport.setFlutter(ov.get('transport.flutter') ?? flutter);
@@ -851,7 +862,10 @@ class TapeProcessor extends AudioWorkletProcessor {
         let x = outputBlock[i];
 
         if (!Number.isFinite(x)) x = 0;
-        x = Math.max(-2, Math.min(2, x));
+        // Safety clamp scaled to headroom so the ceiling stays at +6 dBFS in the
+        // digital domain regardless of the analog operating level.
+        const analogClamp = 2 * inScalar;
+        x = Math.max(-analogClamp, Math.min(analogClamp, x));
 
         // x is at analog levels. Apply output gain.
         const analogOut = x * outputGain;

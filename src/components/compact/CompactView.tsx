@@ -15,7 +15,13 @@ function fmtPct(v: number): string {
 }
 
 function fmtRef(v: number): string {
-  return `-${v.toFixed(0)} dBFS`;
+  return `${v.toFixed(0)} dB`;
+}
+
+function fmtColor(v: number): string {
+  if (v < -0.01) return `Dark ${Math.round(Math.abs(v) * 100)}%`;
+  if (v > 0.01) return `Bright ${Math.round(v * 100)}%`;
+  return 'Neutral';
 }
 
 interface CompactViewProps {
@@ -31,6 +37,7 @@ export function CompactView({ onPresetChange }: CompactViewProps) {
   const ampType = useAudioEngine((s) => s.ampType);
   const bump = useAudioEngine((s) => s.bump);
   const setGlobalBypass = useAudioEngine((s) => s.setGlobalBypass);
+  const setHeadroom = useAudioEngine((s) => s.setHeadroom);
   const setTapeSpeed = useAudioEngine((s) => s.setTapeSpeed);
   const setOversample = useAudioEngine((s) => s.setOversample);
   const setFormula = useAudioEngine((s) => s.setFormula);
@@ -207,12 +214,17 @@ export function CompactView({ onPresetChange }: CompactViewProps) {
           onChange={(v) => { clearOverrides(); setParam('hiss', v); }}
         />
         <Knob
-          label="HEADROOM" min={6} max={36} value={18} step={1}
-          formatValue={fmtRef}
-          onChange={(v) => { clearOverrides(); setParam('headroom', v); }}
+          label="COLOR" min={-1} max={1} value={0} step={0.01}
+          formatValue={fmtColor}
+          onChange={(v) => { clearOverrides(); setParam('color', v); }}
         />
         <Knob
-          label="OUTPUT" min={0.25} max={4} value={1}
+          label="HEADROOM" min={6} max={36} value={18} step={1}
+          formatValue={fmtRef}
+          onChange={(v) => { clearOverrides(); setHeadroom(v); }}
+        />
+        <Knob
+          label="OUTPUT" min={0.25} max={16} value={1}
           formatValue={fmtDb}
           onChange={(v) => { clearOverrides(); setParam('outputGain', v); }}
         />
