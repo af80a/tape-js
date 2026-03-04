@@ -37,6 +37,9 @@ interface AudioEngineState {
   machinePreset: string;
   tapeSpeed: number;
   oversample: number;
+  formula: string;
+  ampType: 'tube' | 'transistor';
+  bump: string;
   currentTime: number;
   duration: number;
   vuDb: number[];
@@ -57,6 +60,9 @@ interface AudioEngineState {
   setMachinePreset: (preset: string) => void;
   setTapeSpeed: (speed: number) => void;
   setOversample: (factor: number) => void;
+  setFormula: (formula: string) => void;
+  setAmpType: (ampType: 'tube' | 'transistor') => void;
+  setBump: (bump: string) => void;
   setGlobalBypass: (bypassed: boolean) => void;
   setParam: (name: string, value: number) => void;
   postMessage: (msg: Parameters<WorkletBridge['postMessage']>[0]) => void;
@@ -74,6 +80,9 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
   machinePreset: 'studer',
   tapeSpeed: 15,
   oversample: 2,
+  formula: '456',
+  ampType: 'transistor',
+  bump: 'flat',
   currentTime: 0,
   duration: 0,
   vuDb: [-20, -20],
@@ -96,6 +105,9 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
     bridge.postMessage({ type: 'set-preset', value: state.machinePreset });
     bridge.postMessage({ type: 'set-speed', value: state.tapeSpeed });
     bridge.postMessage({ type: 'set-oversample', value: state.oversample });
+    bridge.postMessage({ type: 'set-formula', value: state.formula });
+    bridge.postMessage({ type: 'set-amp-type', value: state.ampType });
+    bridge.postMessage({ type: 'set-bump', value: state.bump });
     bridge.postMessage({ type: 'set-bypass', value: state.globalBypassed });
 
     bridge.onMessage((msg) => {
@@ -143,8 +155,28 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
   },
 
   setMachinePreset: (preset: string) => {
+    // When changing machines, reset the character controls to match the machine's defaults
+    // so the user gets the true machine experience out of the box.
+    let defaultFormula = '456';
+    let defaultAmpType: 'tube' | 'transistor' = 'transistor';
+    if (preset === 'ampex') defaultFormula = '456';
+    if (preset === 'studer') defaultFormula = '900';
+    if (preset === 'mci') {
+      defaultFormula = '499';
+      defaultAmpType = 'tube';
+    }
+
     get().bridge?.postMessage({ type: 'set-preset', value: preset });
-    set({ machinePreset: preset });
+    get().bridge?.postMessage({ type: 'set-formula', value: defaultFormula });
+    get().bridge?.postMessage({ type: 'set-amp-type', value: defaultAmpType });
+    get().bridge?.postMessage({ type: 'set-bump', value: 'flat' }); // Reset bump to flat
+
+    set({ 
+      machinePreset: preset,
+      formula: defaultFormula,
+      ampType: defaultAmpType,
+      bump: 'flat',
+    });
   },
 
   setTapeSpeed: (speed: number) => {
@@ -157,6 +189,21 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
     const normalized = factor === 8 ? 8 : factor === 4 ? 4 : 2;
     get().bridge?.postMessage({ type: 'set-oversample', value: normalized });
     set({ oversample: normalized });
+  },
+
+  setFormula: (formula: string) => {
+    get().bridge?.postMessage({ type: 'set-formula', value: formula });
+    set({ formula });
+  },
+
+  setAmpType: (ampType: 'tube' | 'transistor') => {
+    get().bridge?.postMessage({ type: 'set-amp-type', value: ampType });
+    set({ ampType });
+  },
+
+  setBump: (bump: string) => {
+    get().bridge?.postMessage({ type: 'set-bump', value: bump });
+    set({ bump });
   },
 
   setGlobalBypass: (bypassed: boolean) => {

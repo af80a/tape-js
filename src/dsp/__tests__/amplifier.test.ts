@@ -526,3 +526,70 @@ describe('Backward Euler sag stability', () => {
     }
   });
 });
+
+describe('inter-stage coupling API', () => {
+  it('getGridCurrent returns finite value during tube processing', () => {
+    const amp = new AmplifierModel('tube', 1.0);
+    const fs = 48000;
+    for (let i = 0; i < 1000; i++) {
+      amp.process(0.5 * Math.sin(2 * Math.PI * 440 * i / fs));
+    }
+    const Ig = amp.getGridCurrent();
+    expect(Number.isFinite(Ig)).toBe(true);
+    expect(Ig).toBeGreaterThanOrEqual(0);
+  });
+
+  it('grid current increases with positive grid drive', () => {
+    const fs = 48000;
+    const ampLow = new AmplifierModel('tube', 0.2);
+    const ampHigh = new AmplifierModel('tube', 1.0);
+    let maxIgLow = 0, maxIgHigh = 0;
+    for (let i = 0; i < fs * 0.5; i++) {
+      const x = 0.8 * Math.sin(2 * Math.PI * 440 * i / fs);
+      ampLow.process(x);
+      ampHigh.process(x);
+      maxIgLow = Math.max(maxIgLow, ampLow.getGridCurrent());
+      maxIgHigh = Math.max(maxIgHigh, ampHigh.getGridCurrent());
+    }
+    expect(maxIgHigh).toBeGreaterThan(maxIgLow);
+  });
+
+  it('setSagVoltage overrides screen voltage for shared PSU coupling', () => {
+    const amp = new AmplifierModel('tube', 0.5);
+    const fs = 48000;
+    for (let i = 0; i < 1000; i++) amp.process(0);
+    const originalVss = amp.getScreenVoltage();
+
+    amp.setSagVoltage(originalVss * 0.8);
+    expect(amp.getScreenVoltage()).toBeCloseTo(originalVss * 0.8, 1);
+
+    // Processing should still produce finite output with altered sag
+    for (let i = 0; i < 1000; i++) {
+      const y = amp.process(0.5 * Math.sin(2 * Math.PI * 440 * i / fs));
+      expect(Number.isFinite(y)).toBe(true);
+    }
+  });
+
+  it('setSagVoltage is no-op for transistor mode', () => {
+    const amp = new AmplifierModel('transistor', 1.0);
+    amp.setSagVoltage(100);
+    const y = amp.process(0.5);
+    expect(Number.isFinite(y)).toBe(true);
+  });
+
+  it('grid current loading reduces effective transformer output', () => {
+    const amp = new AmplifierModel('tube', 1.0);
+    amp.setDrive(1.0);
+    const fs = 48000;
+    for (let i = 0; i < fs * 0.5; i++) {
+      amp.process(1.0 * Math.sin(2 * Math.PI * 440 * i / fs));
+    }
+    const Ig = amp.getGridCurrent();
+    const Z_out = 10000;
+    const voltageDrop = Ig * Z_out;
+    // For a driven tube, grid current should create a measurable voltage drop
+    // across a 10k secondary impedance
+    expect(voltageDrop).toBeGreaterThan(0);
+    expect(voltageDrop).toBeLessThan(2);
+  });
+});

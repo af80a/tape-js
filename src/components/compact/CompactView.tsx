@@ -23,9 +23,15 @@ export function CompactView({ onPresetChange }: CompactViewProps) {
   const bypassed = useAudioEngine((s) => s.globalBypassed);
   const tapeSpeed = useAudioEngine((s) => s.tapeSpeed);
   const oversample = useAudioEngine((s) => s.oversample);
+  const formula = useAudioEngine((s) => s.formula);
+  const ampType = useAudioEngine((s) => s.ampType);
+  const bump = useAudioEngine((s) => s.bump);
   const setGlobalBypass = useAudioEngine((s) => s.setGlobalBypass);
   const setTapeSpeed = useAudioEngine((s) => s.setTapeSpeed);
   const setOversample = useAudioEngine((s) => s.setOversample);
+  const setFormula = useAudioEngine((s) => s.setFormula);
+  const setAmpType = useAudioEngine((s) => s.setAmpType);
+  const setBump = useAudioEngine((s) => s.setBump);
   const postMessage = useAudioEngine((s) => s.postMessage);
   const preset = useStageParams((s) => s.currentPreset);
   const setStageParam = useStageParams((s) => s.setStageParam);
@@ -62,6 +68,27 @@ export function CompactView({ onPresetChange }: CompactViewProps) {
       setOversample(parseInt(v, 10));
     },
     [setOversample],
+  );
+
+  const handleFormulaChange = useCallback(
+    (v: string) => {
+      setFormula(v);
+    },
+    [setFormula],
+  );
+
+  const handleAmpTypeChange = useCallback(
+    (v: string) => {
+      setAmpType(v as 'tube' | 'transistor');
+    },
+    [setAmpType],
+  );
+
+  const handleBumpChange = useCallback(
+    (v: string) => {
+      setBump(v);
+    },
+    [setBump],
   );
 
   return (
@@ -105,27 +132,8 @@ export function CompactView({ onPresetChange }: CompactViewProps) {
         />
       </div>
 
-      {/* Controls row 2 */}
+      {/* Controls row 2 (Machine & Tweak) */}
       <div className="controls-row compact-controls-row">
-        <Knob
-          label="HISS" min={0} max={1} value={0.05}
-          formatValue={fmtPct}
-          onChange={(v) => { clearOverrides(); setParam('hiss', v); }}
-        />
-        <Knob
-          label="OUTPUT" min={0.25} max={4} value={1}
-          formatValue={fmtDb}
-          onChange={(v) => { clearOverrides(); setParam('outputGain', v); }}
-        />
-        <div className="compact-button-control">
-          <div className="select-label">Global</div>
-          <ToggleButton
-            label="BYPASS"
-            className="bypass-btn"
-            active={bypassed}
-            onToggle={handleBypass}
-          />
-        </div>
         <Select
           label="MACHINE"
           options={[
@@ -135,6 +143,35 @@ export function CompactView({ onPresetChange }: CompactViewProps) {
           ]}
           value={preset}
           onChange={handlePresetChange}
+        />
+        <Select
+          label="FORMULA"
+          options={[
+            { value: '456', label: 'Ampex 456' },
+            { value: '499', label: 'Quantegy 499' },
+            { value: '900', label: 'BASF 900' },
+          ]}
+          value={formula}
+          onChange={handleFormulaChange}
+        />
+        <Select
+          label="AMP TYPE"
+          options={[
+            { value: 'transistor', label: 'Solid State' },
+            { value: 'tube', label: 'Tube 12AX7' },
+          ]}
+          value={ampType}
+          onChange={handleAmpTypeChange}
+        />
+        <Select
+          label="BUMP"
+          options={[
+            { value: 'flat', label: 'Flat (0dB)' },
+            { value: 'subtle', label: 'Subtle (+1.5dB)' },
+            { value: 'massive', label: 'Massive (+3.5dB)' },
+          ]}
+          value={bump}
+          onChange={handleBumpChange}
         />
         <Select
           label="SPEED"
@@ -156,6 +193,29 @@ export function CompactView({ onPresetChange }: CompactViewProps) {
           value={String(oversample)}
           onChange={handleOversampleChange}
         />
+      </div>
+
+      {/* Controls row 3 (Global & Trim) */}
+      <div className="controls-row compact-controls-row">
+        <Knob
+          label="HISS" min={0} max={1} value={0.05}
+          formatValue={fmtPct}
+          onChange={(v) => { clearOverrides(); setParam('hiss', v); }}
+        />
+        <Knob
+          label="OUTPUT" min={0.25} max={4} value={1}
+          formatValue={fmtDb}
+          onChange={(v) => { clearOverrides(); setParam('outputGain', v); }}
+        />
+        <div className="compact-button-control">
+          <div className="select-label">Global</div>
+          <ToggleButton
+            label="BYPASS"
+            className="bypass-btn"
+            active={bypassed}
+            onToggle={handleBypass}
+          />
+        </div>
       </div>
     </div>
   );

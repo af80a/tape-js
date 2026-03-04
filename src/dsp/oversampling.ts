@@ -24,6 +24,104 @@ function besselI0(x: number): number {
   return sum;
 }
 
+/** In-place radix-2 FFT. x_re and x_im must be length N = 2^k. */
+function fft(x_re: Float64Array, x_im: Float64Array, inverse = false) {
+  const N = x_re.length;
+  // bit reversal
+  let j = 0;
+  for (let i = 0; i < N - 1; i++) {
+    if (i < j) {
+      let t = x_re[j]; x_re[j] = x_re[i]; x_re[i] = t;
+      t = x_im[j]; x_im[j] = x_im[i]; x_im[i] = t;
+    }
+    let m = N >> 1;
+    while (m >= 1 && j >= m) { j -= m; m >>= 1; }
+    j += m;
+  }
+  // Cooley-Tukey
+  for (let L = 2; L <= N; L <<= 1) {
+    const halfL = L >> 1;
+    const w_m_re = Math.cos(2 * Math.PI / L * (inverse ? 1 : -1));
+    const w_m_im = Math.sin(2 * Math.PI / L * (inverse ? 1 : -1));
+    for (let k = 0; k < N; k += L) {
+      let w_re = 1, w_im = 0;
+      for (let i = 0; i < halfL; i++) {
+        const u_re = x_re[k + i];
+        const u_im = x_im[k + i];
+        const t_re = w_re * x_re[k + i + halfL] - w_im * x_im[k + i + halfL];
+        const t_im = w_re * x_im[k + i + halfL] + w_im * x_re[k + i + halfL];
+        x_re[k + i] = u_re + t_re;
+        x_im[k + i] = u_im + t_im;
+        x_re[k + i + halfL] = u_re - t_re;
+        x_im[k + i + halfL] = u_im - t_im;
+        const next_w_re = w_re * w_m_re - w_im * w_m_im;
+        w_im = w_re * w_m_im + w_im * w_m_re;
+        w_re = next_w_re;
+      }
+    }
+  }
+  if (inverse) {
+    for (let i = 0; i < N; i++) {
+      x_re[i] /= N;
+      x_im[i] /= N;
+    }
+  }
+}
+
+/** Convert a linear-phase FIR kernel to minimum-phase via real cepstrum. */
+function linearToMinimumPhase(h: Float64Array): Float64Array {
+  // Pad to next power of 2 at least 4x the length to avoid time aliasing
+  let Nfft = 1;
+  while (Nfft < h.length * 4) Nfft <<= 1;
+  
+  const x_re = new Float64Array(Nfft);
+  const x_im = new Float64Array(Nfft);
+  x_re.set(h);
+  
+  // 1. FFT
+  fft(x_re, x_im, false);
+  
+  // 2. Log magnitude
+  for (let i = 0; i < Nfft; i++) {
+    const mag = Math.sqrt(x_re[i]*x_re[i] + x_im[i]*x_im[i]);
+    x_re[i] = Math.log(Math.max(1e-12, mag));
+    x_im[i] = 0;
+  }
+  
+  // 3. IFFT to get real cepstrum
+  fft(x_re, x_im, true);
+  
+  // 4. Multiply cepstrum by causal window
+  x_re[0] *= 1;
+  x_re[Nfft/2] *= 1; // Nyquist bin
+  for (let i = 1; i < Nfft/2; i++) {
+    x_re[i] *= 2;
+    x_im[i] = 0;
+  }
+  for (let i = Nfft/2 + 1; i < Nfft; i++) {
+    x_re[i] = 0;
+    x_im[i] = 0;
+  }
+  
+  // 5. FFT
+  fft(x_re, x_im, false);
+  
+  // 6. Complex exponential
+  for (let i = 0; i < Nfft; i++) {
+    const exp_re = Math.exp(x_re[i]);
+    const cos_im = Math.cos(x_im[i]);
+    const sin_im = Math.sin(x_im[i]);
+    x_re[i] = exp_re * cos_im;
+    x_im[i] = exp_re * sin_im;
+  }
+  
+  // 7. IFFT to get minimum-phase impulse response
+  fft(x_re, x_im, true);
+  
+  // Extract and return the first h.length samples
+  return x_re.slice(0, h.length);
+}
+
 export class Oversampler {
   /** Oversampling factor (1 = bypass, 2 or 4). */
   readonly factor: number;
@@ -102,24 +200,27 @@ export class Oversampler {
       baseKernel[i] = w * sinc;
     }
 
+    // Convert linear-phase kernel to minimum-phase to eliminate pre-ringing
+    const minPhaseKernel = linearToMinimumPhase(baseKernel);
+
     // Compute unnormalized DC gain.
     let dcGain = 0;
     for (let i = 0; i < N; i++) {
-      dcGain += baseKernel[i];
+      dcGain += minPhaseKernel[i];
     }
 
     // Upsample kernel: normalize DC gain to `factor`.
     const upsampleScale = factor / dcGain;
     const upsampleKernel = new Float64Array(N);
     for (let i = 0; i < N; i++) {
-      upsampleKernel[i] = baseKernel[i] * upsampleScale;
+      upsampleKernel[i] = minPhaseKernel[i] * upsampleScale;
     }
 
     // Downsample kernel: normalize DC gain to 1 (anti-alias only).
     const downsampleScale = 1 / dcGain;
     this.downsampleKernel = new Float64Array(N);
     for (let i = 0; i < N; i++) {
-      this.downsampleKernel[i] = baseKernel[i] * downsampleScale;
+      this.downsampleKernel[i] = minPhaseKernel[i] * downsampleScale;
     }
 
     // ---- Decompose Upsample Kernel into Polyphase Components ----

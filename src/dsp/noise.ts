@@ -16,6 +16,7 @@ export class TapeNoise {
   private modShape: BiquadFilter;
   private level = 0.5;
   private envelope = 0;
+  private prevSignal = 0;
   private readonly envCoeff: number;
 
   /** @param sampleRate  Audio sample rate in Hz */
@@ -62,17 +63,24 @@ export class TapeNoise {
     y = this.hpf.process(y);
     y *= this.level * 0.01;
 
-    // Modulation noise: signal-dependent component.
-    // Magnetic domain irregularities cause noise proportional to signal level.
-    if (signalLevel !== undefined && signalLevel > 0) {
-      // Smooth envelope follower to track signal level
-      const absLevel = Math.abs(signalLevel);
-      this.envelope += this.envCoeff * (absLevel - this.envelope);
+    // Modulation (Barkhausen) noise: signal-dependent component.
+    // Magnetic domain irregularities (Barkhausen jumps) cause noise proportional
+    // to the rate of change of the magnetic field (dH/dt) and absolute level.
+    if (signalLevel !== undefined) {
+      const dHdt = Math.abs(signalLevel - this.prevSignal);
+      this.prevSignal = signalLevel;
+      
+      // Envelope tracks the rate of change (transients cause most Barkhausen noise)
+      // combined with a small amount of absolute level.
+      const excitation = dHdt * 15.0 + Math.abs(signalLevel) * 0.1;
+      this.envelope += this.envCoeff * (excitation - this.envelope);
 
       // Second independent white noise source for modulation
       const modWhite = Math.random() * 2 - 1;
       let modNoise = this.modShape.process(modWhite);
-      modNoise *= this.envelope * this.level * 0.015;
+      
+      // Barkhausen noise is extremely gritty/chuffing. Scale it up.
+      modNoise *= this.envelope * this.level * 0.04;
       y += modNoise;
     }
 

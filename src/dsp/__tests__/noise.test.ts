@@ -37,8 +37,8 @@ describe('TapeNoise', () => {
     });
 
     it('noise RMS is higher with loud signal than with silence', () => {
-      // Modulation noise scales with signal envelope: louder signal = more noise.
-      // This is the signature "breathing" quality of tape.
+      // Modulation noise scales with signal envelope and rate of change (Barkhausen effect):
+      // louder/faster signal = more noise. This is the signature "breathing" grit of tape.
       const noiseLoud = new TapeNoise(fs);
       const noiseSilent = new TapeNoise(fs);
       noiseLoud.setLevel(0.5);
@@ -49,7 +49,9 @@ describe('TapeNoise', () => {
       let sumSqSilent = 0;
 
       for (let i = 0; i < numSamples; i++) {
-        const yLoud = noiseLoud.process(0.9);  // loud signal
+        // Use a dynamic sine wave so dH/dt > 0
+        const sig = 0.9 * Math.sin(2 * Math.PI * 400 * i / fs);
+        const yLoud = noiseLoud.process(sig);  // loud signal
         const ySilent = noiseSilent.process(0); // silence
         sumSqLoud += yLoud * yLoud;
         sumSqSilent += ySilent * ySilent;
@@ -74,8 +76,10 @@ describe('TapeNoise', () => {
       let sumSqFull = 0;
 
       for (let i = 0; i < numSamples; i++) {
-        const yHalf = noiseHalf.process(0.5);
-        const yFull = noiseFull.process(1.0);
+        const sigHalf = 0.5 * Math.sin(2 * Math.PI * 400 * i / fs);
+        const sigFull = 1.0 * Math.sin(2 * Math.PI * 400 * i / fs);
+        const yHalf = noiseHalf.process(sigHalf);
+        const yFull = noiseFull.process(sigFull);
         sumSqHalf += yHalf * yHalf;
         sumSqFull += yFull * yFull;
       }

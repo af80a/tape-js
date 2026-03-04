@@ -112,6 +112,11 @@ class TapeProcessor extends AudioWorkletProcessor {
   private tapeSpeed: TapeSpeed;
   private currentPreset: MachinePreset;
 
+  // Track global overrides that should survive oversampling changes
+  private currentFormula: string | null = null;
+  private currentAmpType: 'tube' | 'transistor' | null = null;
+  private currentBump: string | null = null;
+
   // Per-stage bypass map
   private stageBypassed: Map<StageId, boolean> = new Map();
 
@@ -126,6 +131,24 @@ class TapeProcessor extends AudioWorkletProcessor {
 
   // Pre-allocated scratch buffer for block-level oversampling (avoids GC in audio thread)
   private readonly inputBlock = new Float32Array(128);
+  private readonly sagBlock = new Float64Array(1024);
+  private readonly pbIpBlock = new Float64Array(1024);
+
+  // Inter-stage coupling state (1-sample delayed back-coupling)
+  // Grid current from recordAmp loads down the input transformer output
+  private delayedIg: number[] = [];
+  // Tape saturation depth modulates the recordAmp's effective load impedance
+  private delayedTapeSat: number[] = [];
+  // Grid current from playbackAmp loads down the repro head output
+  private delayedPbIg: number[] = [];
+  // Output transformer saturation depth modulates playbackAmp's effective load
+  private delayedOxfmrSat: number[] = [];
+
+  // Physical coupling constants
+  private static readonly XFMR_Z_OUT = 10000;        // transformer secondary impedance (ohms)
+  private static readonly HEAD_Z_OUT = 15000;        // repro head output impedance (ohms)
+  private static readonly TAPE_LOAD_DEPTH = 0.15;    // max 15% compression from tape saturation
+  private static readonly OXFMR_LOAD_DEPTH = 0.20;   // max 20% compression from output xfmr saturation
 
   constructor(options?: { processorOptions?: Record<string, unknown> }) {
     super();
@@ -154,9 +177,13 @@ class TapeProcessor extends AudioWorkletProcessor {
 
       if (type === 'set-preset') {
         this.currentPreset = PRESETS[data.value as string ?? 'studer'] ?? PRESETS['studer'];
+        this.currentFormula = null;
+        this.currentAmpType = null;
+        this.currentBump = null;
         this.stageBypassed.clear();
         this.stageFade.clear();
         this.stageParamOverrides.clear();
+        this.stageGainLin.clear();
         this.initDSP(2, this.currentPreset, this.oversampleFactor, this.tapeSpeed);
       } else if (type === 'set-speed') {
         this.tapeSpeed = (data.value as TapeSpeed) ?? 15;
@@ -164,6 +191,18 @@ class TapeProcessor extends AudioWorkletProcessor {
       } else if (type === 'set-oversample') {
         this.oversampleFactor = (data.value as number) ?? 2;
         this.initDSP(2, this.currentPreset, this.oversampleFactor, this.tapeSpeed);
+      } else if (type === 'set-formula') {
+        const formula = data.value as string;
+        this.currentFormula = formula;
+        this.applyFormula(formula);
+      } else if (type === 'set-amp-type') {
+        const ampType = data.value as 'tube' | 'transistor';
+        this.currentAmpType = ampType;
+        this.applyAmpType(ampType);
+      } else if (type === 'set-bump') {
+        const bump = data.value as string;
+        this.currentBump = bump;
+        this.applyBump(bump);
       } else if (type === 'set-bypass') {
         this.bypassed = !!data.value;
       } else if (type === 'clear-param-overrides') {
@@ -179,6 +218,38 @@ class TapeProcessor extends AudioWorkletProcessor {
         this.alive = false;
       }
     };
+  }
+
+  private applyFormula(formula: string): void {
+    for (const dsp of this.channels) {
+      if (formula === '456') { // Ampex 456 - standard punchy
+        dsp.hysteresis.setBaseC(0.1);
+        dsp.hysteresis.setAlpha(1.6e-3);
+      } else if (formula === '499') { // Quantegy 499 - high output/cleaner
+        dsp.hysteresis.setBaseC(0.15);
+        dsp.hysteresis.setAlpha(1.0e-3);
+      } else if (formula === '900') { // BASF 900 - dark/fat saturation
+        dsp.hysteresis.setBaseC(0.05);
+        dsp.hysteresis.setAlpha(2.5e-3);
+      }
+    }
+  }
+
+  private applyAmpType(ampType: 'tube' | 'transistor'): void {
+    const fs = sampleRate;
+    for (const dsp of this.channels) {
+      const circuit = ampType === 'tube' ? this.currentPreset.tubeCircuit : undefined;
+      dsp.recordAmp = new AmplifierModel(ampType, this.currentPreset.recordAmpDrive, circuit, fs * this.oversampleFactor);
+      dsp.playbackAmp = new AmplifierModel(ampType, this.currentPreset.playbackAmpDrive, circuit, fs * this.oversampleFactor);
+    }
+  }
+
+  private applyBump(bump: string): void {
+    for (const dsp of this.channels) {
+      if (bump === 'flat') dsp.head.setBumpGain(0);
+      else if (bump === 'subtle') dsp.head.setBumpGain(1.5);
+      else if (bump === 'massive') dsp.head.setBumpGain(3.5);
+    }
   }
 
   private handleVariantChange(stageId: StageId, value: string): void {
@@ -214,6 +285,10 @@ class TapeProcessor extends AudioWorkletProcessor {
       return;
     }
 
+    this.applyStageParamToDSP(stageId, param, value);
+  }
+
+  private applyStageParamToDSP(stageId: StageId, param: string, value: number): void {
     for (const dsp of this.channels) {
       switch (stageId) {
         case 'inputXfmr':
@@ -352,6 +427,23 @@ class TapeProcessor extends AudioWorkletProcessor {
       this.stageFade.set(id, (this.stageBypassed.get(id) ?? false) ? 0 : 1);
     }
     this.smoothedBias = Array(channels).fill(0.5);
+    this.delayedIg = Array(channels).fill(0);
+    this.delayedTapeSat = Array(channels).fill(0);
+    this.delayedPbIg = Array(channels).fill(0);
+    this.delayedOxfmrSat = Array(channels).fill(0);
+
+    // Re-apply global overrides
+    if (this.currentFormula) this.applyFormula(this.currentFormula);
+    if (this.currentAmpType) this.applyAmpType(this.currentAmpType);
+    if (this.currentBump) this.applyBump(this.currentBump);
+
+    // Re-apply specific stage parameter overrides
+    for (const [key, value] of this.stageParamOverrides.entries()) {
+      const parts = key.split('.');
+      if (parts.length === 2) {
+        this.applyStageParamToDSP(parts[0] as StageId, parts[1], value);
+      }
+    }
   }
 
   process(
@@ -387,6 +479,10 @@ class TapeProcessor extends AudioWorkletProcessor {
     const attackCoeff = this.vuAttackCoeff;
     const releaseCoeff = this.vuReleaseCoeff;
     const peakRelCoeff = this.peakReleaseCoeff;
+    
+    // Lowpass filter coefficient for 1-sample delayed coupling (prevents Nyquist oscillation).
+    // A 20us time constant (~8kHz cutoff) preserves all punch while ensuring stability.
+    const couplingAlpha = Math.exp(-1 / (sampleRate * factor * 0.00002));
 
     // Cache stage bypass flags for hot loop
     const bypassInputXfmr = this.stageBypassed.get('inputXfmr') ?? false;
@@ -548,15 +644,28 @@ class TapeProcessor extends AudioWorkletProcessor {
 
         let v = recUpsampled[j];
 
+        // inputXfmr → tube grid current loads the transformer (1-sample delayed)
         const dryXfmr = v;
         v = dsp.inputXfmr.process(v) * trimInputXfmr;
+        v -= this.delayedIg[ch] * TapeProcessor.XFMR_Z_OUT;
         maxSatInputXfmr = Math.max(maxSatInputXfmr, dsp.inputXfmr.getSaturationDepth());
         v = dryXfmr + (v - dryXfmr) * fadeInputXfmr;
         p0 += v * v; k0 = Math.max(k0, Math.abs(v));
 
+        // recordAmp → tape saturation loads the amp output (1-sample delayed)
         const dryRamp = v;
-        v = dsp.recordAmp.process(v) * trimRecordAmp;
+        // Physical impedance loading: when tape core saturates, impedance drops from 1M to ~10k
+        const targetRload = 1e6 * (1.0 - this.delayedTapeSat[ch] * 0.99) + 10000;
+        const targetPbIp = this.pbIpBlock[j];
+        v = dsp.recordAmp.process(v, targetPbIp, targetRload) * trimRecordAmp;
         maxSatRecordAmp = Math.max(maxSatRecordAmp, dsp.recordAmp.getSaturationDepth());
+        
+        this.sagBlock[j] = dsp.recordAmp.getScreenVoltage();
+        
+        // Update grid current coupling with low-pass smoothing to prevent Nyquist oscillation
+        const targetIg = dsp.recordAmp.getGridCurrent();
+        this.delayedIg[ch] = this.delayedIg[ch] * couplingAlpha + targetIg * (1 - couplingAlpha);
+        
         v = dryRamp + (v - dryRamp) * fadeRecordAmp;
         p1 += v * v; k1 = Math.max(k1, Math.abs(v));
 
@@ -565,9 +674,15 @@ class TapeProcessor extends AudioWorkletProcessor {
         v = dryReq + (v - dryReq) * fadeRecordEQ;
         p2 += v * v; k2 = Math.max(k2, Math.abs(v));
 
+        // hysteresis → update delayed tape saturation for next sample's amp loading
         const dryHyst = v;
         v = dsp.hysteresis.process(v) * trimHysteresis;
         maxSatHysteresis = Math.max(maxSatHysteresis, dsp.hysteresis.getSaturationDepth());
+        
+        // Update tape saturation coupling with low-pass smoothing
+        const targetSat = dsp.hysteresis.getSaturationDepth();
+        this.delayedTapeSat[ch] = this.delayedTapeSat[ch] * couplingAlpha + targetSat * (1 - couplingAlpha);
+        
         v = dryHyst + (v - dryHyst) * fadeHysteresis;
         p3 += v * v; k3 = Math.max(k3, Math.abs(v));
 
@@ -641,7 +756,7 @@ class TapeProcessor extends AudioWorkletProcessor {
 
       // ---- PHASE 3: PLAYBACK CHAIN (block oversampled) ----
       for (let i = 0; i < blockSize; i++) {
-        updateStageMeter(slPlaybackAmp, 0, tapeBlock[i]);
+        updateStageMeter(slPlaybackEQ, 0, tapeBlock[i]);
       }
 
       const pbUpsampled = dsp.playbackOversampler.upsample(tapeBlock);
@@ -653,20 +768,44 @@ class TapeProcessor extends AudioWorkletProcessor {
       for (let j = 0; j < pbOsLen; j++) {
         let v = pbUpsampled[j];
 
-        const dryPamp = v;
-        v = dsp.playbackAmp.process(v) * trimPlaybackAmp;
-        maxSatPlaybackAmp = Math.max(maxSatPlaybackAmp, dsp.playbackAmp.getSaturationDepth());
-        v = dryPamp + (v - dryPamp) * fadePlaybackAmp;
-        pb0 += v * v; pk0 = Math.max(pk0, Math.abs(v));
-
+        // Repro Head → Playback EQ (Clean preamp stage)
         const dryPeq = v;
         v = dsp.playbackEQ.process(v) * trimPlaybackEQ;
         v = dryPeq + (v - dryPeq) * fadePlaybackEQ;
+        pb0 += v * v; pk0 = Math.max(pk0, Math.abs(v));
+
+        // Playback EQ → Playback Amp Grid loading (1-sample delayed)
+        // Grid current spikes from the amp drag down the EQ's output voltage
+        v -= this.delayedPbIg[ch] * TapeProcessor.HEAD_Z_OUT;
+
+        // Shared power supply: record amp sag propagates to playback amp
+        const sharedSagV = this.sagBlock[j];
+        if (sharedSagV > 0) dsp.playbackAmp.setSagVoltage(sharedSagV);
+
+        const dryPamp = v;
+        // Playback Amp → Output Transformer loading (1-sample delayed)
+        // Physical impedance loading: transformer core saturation drops primary inductance, crashing load impedance
+        const targetOxfmrRload = 1e6 * (1.0 - this.delayedOxfmrSat[ch] * 0.99) + 10000;
+        v = dsp.playbackAmp.process(v, 0, targetOxfmrRload) * trimPlaybackAmp;
+        maxSatPlaybackAmp = Math.max(maxSatPlaybackAmp, dsp.playbackAmp.getSaturationDepth());
+        
+        this.pbIpBlock[j] = dsp.playbackAmp.getPlateCurrent();
+        
+        // Update playback grid current coupling with low-pass smoothing
+        const targetPbIg = dsp.playbackAmp.getGridCurrent();
+        this.delayedPbIg[ch] = this.delayedPbIg[ch] * couplingAlpha + targetPbIg * (1 - couplingAlpha);
+        
+        v = dryPamp + (v - dryPamp) * fadePlaybackAmp;
         pb1 += v * v; pk1 = Math.max(pk1, Math.abs(v));
 
         const dryOxfmr = v;
         v = dsp.outputXfmr.process(v) * trimOutputXfmr;
         maxSatOutputXfmr = Math.max(maxSatOutputXfmr, dsp.outputXfmr.getSaturationDepth());
+        
+        // Update output transformer saturation coupling with low-pass smoothing
+        const targetOxfmrSat = dsp.outputXfmr.getSaturationDepth();
+        this.delayedOxfmrSat[ch] = this.delayedOxfmrSat[ch] * couplingAlpha + targetOxfmrSat * (1 - couplingAlpha);
+        
         v = dryOxfmr + (v - dryOxfmr) * fadeOutputXfmr;
         pb2 += v * v; pk2 = Math.max(pk2, Math.abs(v));
 
@@ -674,9 +813,9 @@ class TapeProcessor extends AudioWorkletProcessor {
 
         // Per-base-rate-sample: update meters, saturation, fades, reset sub-accumulators
         if ((j + 1) % factor === 0) {
-          updateStageMeterPwr(slPlaybackAmp,  1, pb0 * ooF, pk0);
-          updateStageMeterPwr(slPlaybackEQ,   0, pb0 * ooF, pk0);
-          updateStageMeterPwr(slPlaybackEQ,   1, pb1 * ooF, pk1);
+          updateStageMeterPwr(slPlaybackEQ,   1, pb0 * ooF, pk0);
+          updateStageMeterPwr(slPlaybackAmp,  0, pb0 * ooF, pk0);
+          updateStageMeterPwr(slPlaybackAmp,  1, pb1 * ooF, pk1);
           updateStageMeterPwr(slOutputXfmr,   0, pb1 * ooF, pk1);
           updateStageMeterPwr(slOutputXfmr,   1, pb2 * ooF, pk2);
 

@@ -10,7 +10,7 @@ const GAP_X = 28;
 const GAP_Y = 48;
 
 const ROW1: StageId[] = ['inputXfmr', 'recordAmp', 'recordEQ', 'bias', 'hysteresis', 'head'];
-const ROW2: StageId[] = ['transport', 'noise', 'playbackAmp', 'playbackEQ', 'outputXfmr', 'output'];
+const ROW2: StageId[] = ['transport', 'noise', 'playbackEQ', 'playbackAmp', 'outputXfmr', 'output'];
 
 const edgeStyle = {
   stroke: '#4f7773',

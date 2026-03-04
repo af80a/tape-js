@@ -137,7 +137,7 @@ export class AmplifierModel {
   private static readonly R_source = 68e3; // Typical guitar/pedal source impedance (68k)
 
   // Output load resistance (next stage grid input impedance)
-  private static readonly RLOAD = 1e6;
+  private currentRload = 1e6;
 
   // Power supply sag parameters (Sag v2.0 Physical Rectifier)
   private static readonly SAG_MAINS_FREQ = 60;     // AC Mains frequency (Hz)
@@ -214,19 +214,45 @@ export class AmplifierModel {
     return this.driveRaw;
   }
 
-  /** Current plate supply voltage (for diagnostics/testing). */
+  /** Current plate supply voltage (for diagnostics/testing and shared sag). */
   getScreenVoltage(): number {
     return this.sagVscreen;
   }
 
-  process(input: number): number {
+  /** Grid current from the last converged Newton-Raphson solve (tube mode only). */
+  getGridCurrent(): number {
+    return this.i_nl_prev[1];
+  }
+
+  /** Plate current from the last converged Newton-Raphson solve (tube mode only). */
+  getPlateCurrent(): number {
+    return this.i_nl_prev[0];
+  }
+
+  /**
+   * Override the screen voltage from an external source (shared power supply).
+   * Lightweight per-sample call — no allocation, no state rebuild.
+   */
+  setSagVoltage(v: number): void {
+    if (this.mode !== 'tube') return;
+    this.sagVscreen = Math.max(0, v);
+  }
+
+  process(input: number, externalIp = 0, Rload = 1e6): number {
+    if (Math.abs(this.currentRload - Rload) > 1.0) {
+      this.currentRload = Rload;
+      if (this.mode === 'tube') {
+        this.initStateSpace();
+      }
+    }
+
     const driven = input * this.drive;
     if (this.mode === 'tube') {
       // Very gentle makeup gain so it's not super quiet at 0%, but we do not
       // use the aggressive (0.5 / this.drive) because it amplifies power supply ripple.
       // E.g., at drive=0 (driveRaw=0), makeup=2.0. At drive=1, makeup=1.0.
       const makeup = 1.0 + (1.0 - this.driveRaw) * 1.0;
-      return this.tubeProcess(driven) * makeup;
+      return this.tubeProcess(driven, externalIp) * makeup;
     }
     return this.transistorSaturate(driven);
   }
@@ -257,7 +283,7 @@ export class AmplifierModel {
   private initStateSpace(): void {
     const T = 1 / this.fs;
     const { Rp, Rg, Rk, Cc_in, Cc_out, Ck } = this.circuitParams;
-    const Rl = AmplifierModel.RLOAD;
+    const Rl = this.currentRload;
 
     // Companion resistances
     const Rc1 = T / (2 * Cc_in);
@@ -476,7 +502,7 @@ export class AmplifierModel {
   // Per-sample tube processing with Newton-Raphson solver
   // -------------------------------------------------------------------------
 
-  private tubeProcess(u: number): number {
+  private tubeProcess(u: number, externalIp = 0): number {
     const x = this.x;
     const Vpp = this.sagVscreen;
 
@@ -557,7 +583,7 @@ export class AmplifierModel {
     this.x[3] = x3_next;
 
     // Update power supply sag via physical AC mains + rectifier model
-    this.updateSag(Ip);
+    this.updateSag(Ip + externalIp);
 
     // Normalize output: raw y is in volts, scale to ~[-1,1]
     return y / this.dcPlateVoltage;

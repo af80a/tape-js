@@ -7,8 +7,8 @@ export const STAGE_IDS = [
   'head',
   'transport',
   'noise',
-  'playbackAmp',
   'playbackEQ',
+  'playbackAmp',
   'outputXfmr',
   'output',
 ] as const;

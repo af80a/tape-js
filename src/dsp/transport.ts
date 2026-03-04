@@ -63,8 +63,10 @@ export class TransportModel {
   private prngState: number;
   private wowNoiseState = 0;
   private flutterNoiseState = 0;
+  private scrapeNoiseState = 0;
   private readonly wowNoiseCoeff: number;
   private readonly flutterNoiseCoeff: number;
+  private readonly scrapeNoiseCoeff: number;
 
   // Wow frequency drift: very slow modulation of wow rate simulating
   // reel diameter change as tape moves from supply to takeup reel.
@@ -112,8 +114,10 @@ export class TransportModel {
     // Filtered noise for non-periodic modulation character.
     // Wow noise: lowpass at ~2 Hz captures slow mechanical drift.
     // Flutter noise: lowpass at ~12 Hz captures capstan jitter bandwidth.
+    // Scrape noise: bandpass/lowpass around 3-4 kHz for stick-slip head friction.
     this.wowNoiseCoeff = 1 - Math.exp(-TWO_PI * 2 / sampleRate);
     this.flutterNoiseCoeff = 1 - Math.exp(-TWO_PI * 12 / sampleRate);
+    this.scrapeNoiseCoeff = 1 - Math.exp(-TWO_PI * 3500 / sampleRate);
 
     // Seed xorshift32 PRNG per-channel for stereo decorrelation
     this.prngState = 1 + channelIndex * 65537;
@@ -162,6 +166,7 @@ export class TransportModel {
     // 2. Generate filtered noise for non-periodic modulation
     this.wowNoiseState += this.wowNoiseCoeff * (this.nextNoise() - this.wowNoiseState);
     this.flutterNoiseState += this.flutterNoiseCoeff * (this.nextNoise() - this.flutterNoiseState);
+    this.scrapeNoiseState += this.scrapeNoiseCoeff * (this.nextNoise() - this.scrapeNoiseState);
 
     // 3. Calculate modulated delay from physics-based speed deviation
     // Delay amplitude (samples) = peak_speed_deviation / angular_rate
@@ -179,7 +184,11 @@ export class TransportModel {
       this.flutterDepth *
       this.flutterDelayAmp;
 
-    const delay = this.baseDelay + wowMod + flutterMod;
+    // Scrape flutter: physically very fast (3-4kHz), causes FM sidebands (gritty/smeary).
+    // Delay amplitude = max_deviation / angular_rate. For 3kHz and 0.05% dev, amp is ~0.0015 samples.
+    const scrapeMod = this.scrapeNoiseState * this.flutterDepth * 0.0015;
+
+    const delay = this.baseDelay + wowMod + flutterMod + scrapeMod;
 
     // 4. Advance LFO phases with wow frequency drift
     // Drift modulates the wow rate by ±15% over a ~50 second period,
@@ -233,6 +242,7 @@ export class TransportModel {
     this.flutterPhase = this.initialFlutterPhase;
     this.wowNoiseState = 0;
     this.flutterNoiseState = 0;
+    this.scrapeNoiseState = 0;
     this.driftPhase = 0;
   }
 }
