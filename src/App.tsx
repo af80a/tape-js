@@ -15,12 +15,14 @@ export default function App() {
 
   const loadFile = useAudioEngine((s) => s.loadFile);
   const stageMeters = useAudioEngine((s) => s.stageMeters);
+  const globalVuDb = useAudioEngine((s) => s.vuDb);
+  const globalPeakDb = useAudioEngine((s) => s.peakDb);
   const loadPreset = useStageParams((s) => s.loadPreset);
 
   const inVuDb = stageMeters.inputXfmr?.vuDb[0] ?? -60;
   const inPeakDb = stageMeters.inputXfmr?.peakDb[0] ?? -60;
-  const outVuDb = stageMeters.output?.vuDb[1] ?? -60;
-  const outPeakDb = stageMeters.output?.peakDb[1] ?? -60;
+  const outVuDb = Math.max(...globalVuDb);
+  const outPeakDb = Math.max(...globalPeakDb);
 
   const handleFileLoad = useCallback(
     (file: File) => { loadFile(file); },

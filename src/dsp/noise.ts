@@ -19,8 +19,16 @@ export class TapeNoise {
   private prevSignal = 0;
   private readonly envCoeff: number;
 
-  /** @param sampleRate  Audio sample rate in Hz */
-  constructor(sampleRate: number) {
+  // Per-instance xorshift32 PRNG for independent per-channel noise.
+  // Avoids global Math.random() which couples channels' noise sequences.
+  private prngState: number;
+
+  /**
+   * @param sampleRate  Audio sample rate in Hz
+   * @param seed        PRNG seed for per-channel independence (use channel index)
+   */
+  constructor(sampleRate: number, seed = 0) {
+    this.prngState = 1 + seed * 196613;
     // Shape filter: peaking boost at 4 kHz, +6 dB, Q = 1.5
     this.shape = new BiquadFilter(
       designPeaking(4000, sampleRate, 6, 1.5),
@@ -56,7 +64,7 @@ export class TapeNoise {
     if (this.level < 0.001) return 0;
 
     // White noise source
-    const white = Math.random() * 2 - 1;
+    const white = this.nextNoise();
 
     // Bias noise: constant hiss shaped by peaking + HPF
     let y = this.shape.process(white);
@@ -76,7 +84,7 @@ export class TapeNoise {
       this.envelope += this.envCoeff * (excitation - this.envelope);
 
       // Second independent white noise source for modulation
-      const modWhite = Math.random() * 2 - 1;
+      const modWhite = this.nextNoise();
       let modNoise = this.modShape.process(modWhite);
       
       // Barkhausen noise is extremely gritty/chuffing. Scale it up.
@@ -87,11 +95,22 @@ export class TapeNoise {
     return y;
   }
 
-  /** Reset filter states and envelope. */
+  /** Xorshift32 PRNG returning a value in [-1, 1]. */
+  private nextNoise(): number {
+    let x = this.prngState | 0;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    this.prngState = x;
+    return (x | 0) / 0x7FFFFFFF;
+  }
+
+  /** Reset filter states, envelope, and signal tracking. */
   reset(): void {
     this.shape.reset();
     this.hpf.reset();
     this.modShape.reset();
     this.envelope = 0;
+    this.prevSignal = 0;
   }
 }

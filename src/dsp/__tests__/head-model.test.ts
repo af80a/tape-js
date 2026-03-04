@@ -5,6 +5,9 @@ describe('HeadModel', () => {
   const fs = 44100;
   const tapeSpeed = 15; // ips
 
+  // No Math.random mock needed: HeadModel uses per-instance xorshift32 PRNG,
+  // and dropoutIntensity defaults to 0 (no random calls unless explicitly enabled).
+
   /**
    * Helper: measure steady-state peak amplitude of a sine wave
    * processed through the head model.
@@ -66,7 +69,6 @@ describe('HeadModel', () => {
     // Lower speed → broader bump (lower Q), higher speed → narrower bump (higher Q).
     // We test this by measuring the normalized selectivity: peak(f0) / peak(f0 * 1.25).
     // With speed-dependent Q, these ratios should differ between speeds.
-    // With fixed Q=2.0, both ratios would be approximately equal.
 
     function measureSelectivity(speed: number): number {
       const bumpFreq = speed * 3.67;
@@ -78,13 +80,23 @@ describe('HeadModel', () => {
     }
 
     const sel7 = measureSelectivity(7.5);
-    const sel15 = measureSelectivity(15);
     const sel30 = measureSelectivity(30);
 
     // With speed-dependent Q, selectivity should increase noticeably with speed.
-    // Q ~1.375 at 7.5ips vs Q ~2.5 at 30ips should produce a meaningful
-    // difference in selectivity (>10%), not just digital rounding artifacts.
     expect(sel30 - sel7).toBeGreaterThan(0.10);
+  });
+
+  it('head bump dip attenuates at 2x bump frequency', () => {
+    // The dip filter should create a notch at 2 * bumpFreq.
+    // Compare output at bump freq vs 2x bump freq with no gap/spacing loss.
+    const bumpFreq = tapeSpeed * 3.67;
+    const model = new HeadModel(fs, tapeSpeed, { gapWidth: 0, spacing: 0 });
+    const peakAtBump = measurePeak(model, bumpFreq);
+    model.reset();
+    const peakAtDip = measurePeak(model, bumpFreq * 2);
+
+    // The bump should be louder than the dip region
+    expect(peakAtBump).toBeGreaterThan(peakAtDip * 1.3);
   });
 
   describe('FIR loss filter (sinc gap loss + spacing loss)', () => {
@@ -136,12 +148,12 @@ describe('HeadModel', () => {
     });
 
     it('lower tape speed increases HF loss (shorter wavelength at same frequency)', () => {
-      const fast = new HeadModel(fs, 15, { gapWidth: 3e-6, spacing: 0 });
+      const fast = new HeadModel(fs, 15, { gapWidth: 3e-6, spacing: 0, bumpGainDb: 0 });
       const fastPeak = measurePeak(fast, 12000);
       fast.reset();
       const fastRef = measurePeak(fast, 500);
 
-      const slow = new HeadModel(fs, 7.5, { gapWidth: 3e-6, spacing: 0 });
+      const slow = new HeadModel(fs, 7.5, { gapWidth: 3e-6, spacing: 0, bumpGainDb: 0 });
       const slowPeak = measurePeak(slow, 12000);
       slow.reset();
       const slowRef = measurePeak(slow, 500);
@@ -159,6 +171,37 @@ describe('HeadModel', () => {
         const y = model.process(Math.sin(2 * Math.PI * 440 * i / fs));
         expect(Number.isFinite(y)).toBe(true);
       }
+    });
+  });
+
+  describe('stochastic dropouts', () => {
+    it('dropout with high intensity causes HF loss over many samples', () => {
+      // HeadModel uses per-instance xorshift32 PRNG (not Math.random),
+      // so we can't mock the random source. Instead, run for long enough
+      // that at least one dropout statistically occurs (at max intensity,
+      // probability per sample = 5e-6 → expected ~1 dropout per 200k samples,
+      // so 500k samples should reliably trigger several).
+      const clean = new HeadModel(fs, tapeSpeed, { gapWidth: 0, spacing: 0, bumpGainDb: 0 });
+      const dirty = new HeadModel(fs, tapeSpeed, { gapWidth: 0, spacing: 0, bumpGainDb: 0 }, 42);
+      dirty.setDropoutIntensity(1.0);
+
+      const freq = 10000;
+      const totalSamples = 500000;
+      let cleanEnergy = 0, dirtyEnergy = 0;
+
+      for (let i = 0; i < totalSamples; i++) {
+        const x = Math.sin(2 * Math.PI * freq * i / fs);
+        const yClean = clean.process(x);
+        const yDirty = dirty.process(x);
+
+        cleanEnergy += yClean * yClean;
+        dirtyEnergy += yDirty * yDirty;
+      }
+
+      // Dropouts cause momentary HF attenuation, reducing total energy.
+      // With several dropouts over 500k samples, dirty energy should be
+      // measurably less than clean energy.
+      expect(dirtyEnergy).toBeLessThan(cleanEnergy);
     });
   });
 });

@@ -124,7 +124,7 @@ describe('HeadModel.setBumpGain', () => {
 
     // Process with default bump gain
     const results1: number[] = [];
-    for (let i = 0; i < 100; i++) {
+    for (let i = 0; i < 1000; i++) {
       results1.push(head.process(Math.sin(i * 0.01))); // Low frequency signal
     }
 
@@ -132,7 +132,7 @@ describe('HeadModel.setBumpGain', () => {
     head.setBumpGain(6.0); // Max boost
 
     const results2: number[] = [];
-    for (let i = 0; i < 100; i++) {
+    for (let i = 0; i < 1000; i++) {
       results2.push(head.process(Math.sin(i * 0.01)));
     }
 

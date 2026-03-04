@@ -1,14 +1,17 @@
 /**
  * Tape head frequency-response model.
  *
- * Models four phenomena:
+ * Models five phenomena:
  * 1. Head bump — a low-frequency resonance peak whose frequency
- *    scales with tape speed.
+ *    scales with tape speed (biquad peaking filter, per ChowTape/DAFx 2019).
  * 2. Head-bump dip — a slight dip at twice the bump frequency.
  * 3. Gap loss — sinc(π * g * f / v) rolloff from the finite width
  *    of the playback head gap.
  * 4. Spacing loss — exp(-2π * d * f / v) exponential HF loss from
  *    the head-to-tape air gap (Wallace equation).
+ * 5. Stochastic dropouts — momentary spacing increases from coating
+ *    defects/particles, modeled via the Wallace equation with a single
+ *    spacing parameter d(t) driving both gain and HF rolloff.
  *
  * The gap + spacing losses are combined into a short FIR filter whose
  * coefficients are computed from the sampled frequency response via
@@ -39,22 +42,43 @@ export class HeadModel {
   private lossKernel: Float64Array;
   private lossState: Float64Array;
   private readonly lossOrder: number;
-  
+
   // Options cache
   private readonly gapWidth: number;
   private readonly spacing: number;
   private bumpGainDb: number;
 
+  // Stochastic dropout state
+  // All driven by a single physical variable: instantaneous head-to-tape spacing d(t).
+  // The Hanning-windowed spacing profile drives both broadband gain loss and
+  // HF rolloff via the Wallace spacing loss equation.
+  private dropoutActive = false;
+  private dropoutDuration = 0;
+  private dropoutTime = 0;
+  private dropoutIntensity = 0.0;
+  // Peak spacing increase in meters during a dropout event.
+  // Typical tape lift-off from particles: 1-25 µm.
+  private dropoutPeakSpacing = 0;
+  // Smoothed instantaneous spacing for the Wallace LPF (avoids clicks)
+  private dropoutSpacing = 0;
+  private dropoutLpfState = 0;
+
+  // Per-instance xorshift32 PRNG for dropout randomness.
+  // Avoids global this.nextRandom() which couples channels' dropout sequences.
+  private prngState: number;
+
   /**
    * @param sampleRate    Audio sample rate in Hz
    * @param tapeSpeedIps  Tape speed in inches per second (e.g. 15)
    * @param options       Gap width and spacing for loss filter
+   * @param seed          PRNG seed for dropout randomness (use channel index)
    */
-  constructor(sampleRate: number, tapeSpeedIps: number, options?: HeadLossOptions) {
+  constructor(sampleRate: number, tapeSpeedIps: number, options?: HeadLossOptions, seed = 0) {
+    this.prngState = 1 + seed * 65537;
     this.sampleRate = sampleRate;
     this.tapeSpeedIps = tapeSpeedIps;
     this.lossOrder = LOSS_FIR_ORDER;
-    
+
     this.gapWidth = options?.gapWidth ?? 2e-6;
     this.spacing = options?.spacing ?? 0.5e-6;
     this.bumpGainDb = options?.bumpGainDb ?? 3.0;
@@ -95,7 +119,7 @@ export class HeadModel {
   setSpeed(tapeSpeedIps: number): void {
     if (this.tapeSpeedIps === tapeSpeedIps) return;
     this.tapeSpeedIps = tapeSpeedIps;
-    
+
     const maxFreq = 0.45 * this.sampleRate;
     const bumpFreq = Math.min(tapeSpeedIps * 3.67, maxFreq);
     const bumpQ = 1.0 + (tapeSpeedIps / 30) * 1.5;
@@ -182,12 +206,75 @@ export class HeadModel {
     }
   }
 
-  /** Process a single sample: bump -> dip -> FIR loss filter. */
+  /** Process a single sample: dropouts -> bump -> dip -> FIR loss filter. */
   process(input: number): number {
-    let y = this.bump.process(input);
+    const tapeSpeedMps = this.tapeSpeedIps * 0.0254;
+
+    // --- Stochastic Dropouts ---
+    // Tape momentarily lifts off the head due to coating defects or particles.
+    // A single physical variable — instantaneous spacing d(t) — drives both
+    // broadband attenuation and HF rolloff via the Wallace equation.
+    if (this.dropoutIntensity > 0 && !this.dropoutActive) {
+      // Probability per sample: at max intensity, ~once per 4 seconds at 48kHz
+      if (this.nextRandom() < 5e-6 * this.dropoutIntensity) {
+        this.dropoutActive = true;
+        // Duration: 1-15ms typical (IEC 60094), up to 30ms at max intensity
+        const minDur = 0.001;
+        const maxDur = 0.005 + 0.025 * this.dropoutIntensity;
+        this.dropoutDuration = (minDur + this.nextRandom() * (maxDur - minDur)) * this.sampleRate;
+        this.dropoutTime = 0;
+        // Peak spacing: 2-25 µm, scaled by intensity
+        this.dropoutPeakSpacing = (2e-6 + this.nextRandom() * 23e-6 * this.dropoutIntensity);
+      }
+    }
+
+    // Compute instantaneous dropout spacing from Hanning envelope
+    let targetSpacing = 0;
+    if (this.dropoutActive) {
+      this.dropoutTime++;
+      if (this.dropoutTime >= this.dropoutDuration) {
+        this.dropoutActive = false;
+      } else {
+        const env = 0.5 - 0.5 * Math.cos(2 * Math.PI * this.dropoutTime / this.dropoutDuration);
+        targetSpacing = this.dropoutPeakSpacing * env;
+      }
+    }
+
+    // Smooth spacing transitions (τ ≈ 0.5ms to prevent clicks)
+    const spacingSmoothAlpha = Math.exp(-1 / (this.sampleRate * 0.0005));
+    this.dropoutSpacing = this.dropoutSpacing * spacingSmoothAlpha + targetSpacing * (1 - spacingSmoothAlpha);
+
+    let y = input;
+
+    // Apply Wallace-equation-derived dropout effects when spacing is significant
+    if (this.dropoutSpacing > 1e-8) {
+      const d = this.dropoutSpacing;
+
+      // Broadband attenuation at a reference frequency (1 kHz).
+      // Wallace: loss = exp(-2π * d * f / v)
+      const refFreq = 1000;
+      const broadbandGain = Math.exp(-2 * Math.PI * d * refFreq / tapeSpeedMps);
+      y *= broadbandGain;
+
+      // Dynamic LPF: the -3dB cutoff from the Wallace equation is
+      // f_3dB = v * ln(2) / (2π * d)
+      const cutoff = Math.min(
+        tapeSpeedMps * 0.6931 / (2 * Math.PI * d),
+        this.sampleRate * 0.45,
+      );
+      const alpha = Math.exp(-2 * Math.PI * cutoff / this.sampleRate);
+      this.dropoutLpfState = this.dropoutLpfState * alpha + y * (1 - alpha);
+      y = this.dropoutLpfState;
+    } else {
+      // Track the signal to prevent click when a dropout begins
+      this.dropoutLpfState = y;
+    }
+
+    // --- Head bump + dip (biquad peaking filters) ---
+    y = this.bump.process(y);
     y = this.dip.process(y);
 
-    // FIR loss filter (direct convolution with delay line)
+    // --- FIR loss filter (direct convolution with delay line) ---
     const N = this.lossKernel.length;
     const state = this.lossState;
     const kernel = this.lossKernel;
@@ -209,10 +296,26 @@ export class HeadModel {
 
   /** Update the head bump gain in dB (range -6 to +6). */
   setBumpGain(gainDb: number): void {
+    this.bumpGainDb = gainDb;
     const maxFreq = 0.45 * this.sampleRate;
     const bumpFreq = Math.min(this.tapeSpeedIps * 3.67, maxFreq);
     const bumpQ = 1.0 + (this.tapeSpeedIps / 30) * 1.5;
     this.bump.updateCoeffs(designPeaking(bumpFreq, this.sampleRate, gainDb, bumpQ));
+  }
+
+  /** Update dropout intensity (0 = off, 1 = max). */
+  setDropoutIntensity(intensity: number): void {
+    this.dropoutIntensity = intensity;
+  }
+
+  /** Xorshift32 PRNG returning a value in [0, 1). */
+  private nextRandom(): number {
+    let x = this.prngState | 0;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    this.prngState = x;
+    return ((x >>> 0) / 0xFFFFFFFF);
   }
 
   /** Reset all internal filter states. */
@@ -220,5 +323,8 @@ export class HeadModel {
     this.bump.reset();
     this.dip.reset();
     this.lossState.fill(0);
+    this.dropoutSpacing = 0;
+    this.dropoutLpfState = 0;
+    this.dropoutActive = false;
   }
 }

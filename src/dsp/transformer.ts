@@ -48,9 +48,7 @@ export class TransformerModel {
   private vL = 0; // Voltage across the primary inductor (the output of the saturation stage)
 
   // ODE Coefficients
-  private k1 = 0;
-  private k2 = 0;
-  private k3 = 0;
+  private K_eff = 0;  // Effective core stiffness: coreStiffness * sqrt(satAmount)
   private currentWlf = 0; // Omega of LF cutoff
   private readonly coreStiffness: number;
 
@@ -98,37 +96,24 @@ export class TransformerModel {
   }
 
   /**
-   * Pre-calculates the coefficients for the nonlinear current polynomial:
-   * I(Φ) * R = ω_LF * Φ * [ 1 + a*(K*Φ) + b*(K*Φ)^2 ]
+   * Pre-calculates the effective core stiffness for the cosh² nonlinear model:
+   * I(Φ) * R = ω_LF * Φ * cosh²(K_eff*Φ) * (1 + a*K_eff*Φ)
    *
-   * The Φ*(1 + ...) form guarantees I(0)=0. With a=0, the symmetric case
-   * b*(KΦ)^2 is the leading-order Taylor expansion of cosh²(KΦ), which is
-   * the exact current-flux inversion of a tanh B-H curve.
-   * Asymmetry (a≠0) tilts the curve to generate even harmonics.
+   * cosh²(KΦ) is the exact current-flux inversion of a tanh B-H curve
+   * (Jiles-Atherton framework). It grows exponentially near saturation,
+   * naturally bounding flux without any hard clamp.
+   * The (1 + a*K_eff*Φ) tilt produces even harmonics while preserving I(0)=0.
+   *
+   * K_eff = coreStiffness * sqrt(satAmount).
+   * When satAmount = 0, K_eff = 0, cosh²(0) = 1 → perfectly linear.
    */
   private updateOdeCoeffs(): void {
     this.currentWlf = 2.0 * Math.PI * this.currentLfCutoff;
 
-    const a = this.asymmetry;
-    let b = this.satGain;
-
-    // Mathematical safety: ensure F'(Φ) = 3k3Φ² + 2k2Φ + k1 > 0 for all Φ (monotonic cubic).
-    // The exact condition is k2² < 3*k3*k1. Since k1 is dominated by 2/T (>>ω_LF),
-    // this is much more lenient than the normalized form, but enforcing b > a²/3
-    // is a simple, conservative bound that always satisfies it.
-    const minB = (a * a) / 3.0;
-    if (b < minB && (b > 0 || a !== 0)) {
-      b = minB + 0.001; // Force monotonicity if asymmetry demands it
-    }
-
-    // k1 = ω_LF + 2/T  (The linear HPF term + Trapezoidal integration term)
-    this.k1 = this.currentWlf + 2.0 / this.T;
-
-    // k2 = ω_LF * K * a (Quadratic asymmetry term)
-    this.k2 = this.currentWlf * this.coreStiffness * a;
-
-    // k3 = ω_LF * K^2 * b (Cubic saturation term)
-    this.k3 = this.currentWlf * this.coreStiffness * this.coreStiffness * b;
+    // Effective stiffness scales with sqrt of saturation amount.
+    // sqrt preserves the perceptual scaling: doubling satAmount roughly
+    // doubles the perceived saturation depth.
+    this.K_eff = this.coreStiffness * Math.sqrt(this.satGain);
   }
 
   process(input: number): number {
@@ -143,23 +128,53 @@ export class TransformerModel {
 
     let phi = this.flux; // Initial guess for Newton-Raphson
 
-    if (this.k3 === 0 && this.k2 === 0) {
+    const K = this.K_eff;
+    const wlf = this.currentWlf;
+    const a = this.asymmetry;
+    const twoOverT = 2.0 / this.T;
+
+    if (K === 0 && a === 0) {
       // Fast path: perfectly linear (satAmount = 0, asymmetry = 0)
       // This collapses exactly into a pristine digital 1-pole HPF.
-      phi = C / this.k1;
+      phi = C / (wlf + twoOverT);
     } else {
-      // Newton-Raphson Iteration (4 passes is sufficient for a monotonic cubic)
-      for (let i = 0; i < 4; i++) {
-        const phi2 = phi * phi;
-        const phi3 = phi2 * phi;
+      // Newton-Raphson Iteration using cosh²(K*Φ) magnetizing current.
+      // F(Φ) = ω_LF * Φ * cosh²(K*Φ) * (1 + a*K*Φ) + (2/T)*Φ - C = 0
+      //
+      // Computed efficiently: e = exp(K*Φ), cosh = (e+1/e)/2, sinh = (e-1/e)/2
+      // cosh² = (e² + 2 + e⁻²)/4, sinh(2x) = 2*sinh*cosh = (e²-e⁻²)/2
 
-        // F(Φ) = k3*Φ^3 + k2*Φ^2 + k1*Φ - C = 0
-        const F = this.k3 * phi3 + this.k2 * phi2 + this.k1 * phi - C;
+      // Phi clamp: keep K*Φ within ±200 to prevent exp overflow AND ensure
+      // Newton can converge (clamping Kphi alone causes stalling if phi drifts
+      // beyond the clamp region). At |K*Φ| = 200, cosh² ≈ e^400 which is
+      // deep saturation — physical flux never reaches this.
+      const phiMax = K > 0 ? 200 / K : 1e6;
 
-        // Derivative F'(Φ)
-        const dF = 3.0 * this.k3 * phi2 + 2.0 * this.k2 * phi + this.k1;
+      for (let i = 0; i < 5; i++) {
+        phi = Math.max(-phiMax, Math.min(phiMax, phi));
+        const Kphi = K * phi;
+        const e = Math.exp(Kphi);
+        const eInv = 1.0 / e;
+        const coshKphi = (e + eInv) * 0.5;
+        const cosh2 = coshKphi * coshKphi;
+        const sinh2Kphi = (e * e - eInv * eInv) * 0.5; // sinh(2*K*Φ)
 
-        // Update guess
+        const tilt = 1.0 + a * Kphi;
+
+        // F(Φ) = ω_LF * Φ * cosh²(K*Φ) * (1 + a*K*Φ) + (2/T)*Φ - C
+        const F = wlf * phi * cosh2 * tilt + twoOverT * phi - C;
+
+        // F'(Φ) = ω_LF * [cosh²(K*Φ)*(1 + 2a*K*Φ) + K*Φ*sinh(2*K*Φ)*(1 + a*K*Φ)] + 2/T
+        // Guard: dF must be positive for Newton to descend. The linear term
+        // (2/T) always contributes positively. If the nonlinear terms go
+        // negative (possible with asymmetry + large negative Kphi), clamp
+        // dF to the linear minimum to prevent sign-flip divergence.
+        const dF = Math.max(
+          twoOverT,
+          wlf * (cosh2 * (1.0 + 2.0 * a * Kphi) +
+                 K * phi * sinh2Kphi * tilt) + twoOverT,
+        );
+
         phi -= F / dF;
       }
     }
@@ -185,8 +200,8 @@ export class TransformerModel {
     // 3. LPF (HF rolloff / resonant peak)
     x = this.lpf.process(x);
 
-    // Fail-safe protection downstream
-    if (!Number.isFinite(x) || Math.abs(x) > 50) {
+    // NaN guard only — cosh² naturally bounds flux, no hard clamp needed
+    if (!Number.isFinite(x)) {
       this.reset();
       return 0;
     }
@@ -253,14 +268,25 @@ export class TransformerModel {
   getSaturationDepth(): number {
     if (this.satGain <= 0.001 && this.asymmetry === 0) return 0;
 
-    // I'(Φ) represents the inverse of permeability.
-    // When unsaturated, I'(Φ) = ω_LF.
-    // When saturated, it spikes rapidly.
-    const dI_dPhi =
-      this.currentWlf +
-      2.0 * this.k2 * this.flux +
-      3.0 * this.k3 * (this.flux * this.flux);
+    const K = this.K_eff;
+    // Clamp Kphi to ±200 to match Newton solver bounds
+    const Kphi = Math.max(-200, Math.min(200, K * this.flux));
+    const a = this.asymmetry;
 
+    // dI/dΦ using cosh² model:
+    // I(Φ)*R = ω_LF * Φ * cosh²(K*Φ) * (1 + a*K*Φ)
+    // dI/dΦ = ω_LF * [cosh²(K*Φ)*(1 + 2a*K*Φ) + K*Φ*sinh(2*K*Φ)*(1 + a*K*Φ)]
+    const e = Math.exp(Kphi);
+    const eInv = 1.0 / e;
+    const coshKphi = (e + eInv) * 0.5;
+    const cosh2 = coshKphi * coshKphi;
+    const sinh2Kphi = (e * e - eInv * eInv) * 0.5;
+    const tilt = 1.0 + a * Kphi;
+
+    const dI_dPhi = this.currentWlf * (cosh2 * (1.0 + 2.0 * a * Kphi) +
+                    K * this.flux * sinh2Kphi * tilt);
+
+    // When unsaturated, dI/dΦ ≈ ω_LF. When saturated, it spikes.
     // Ratio maps [ω_LF ... ∞] to [0 ... 1]
     const depth = 1.0 - this.currentWlf / dI_dPhi;
     return clamp(depth, 0, 1);

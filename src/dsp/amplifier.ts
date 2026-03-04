@@ -262,6 +262,7 @@ export class AmplifierModel {
       this.solveDCOperatingPoint();
     } else {
       this.txBiasState = 0;
+      this._saturationDepth = 0;
     }
   }
 

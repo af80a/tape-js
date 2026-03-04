@@ -293,6 +293,27 @@ describe('TransformerModel', () => {
     });
   });
 
+  it('flux stays bounded under extreme drive (no hard clamp needed)', () => {
+    const fs = sampleRate;
+    // Extreme conditions: high saturation, high input gain, low frequency
+    const tf = new TransformerModel(fs, { satAmount: 4.0, inputGain: 4.0, lfCutoff: 5 });
+    const freq = 30; // Very low frequency = maximum flux accumulation
+    const numSamples = Math.floor(fs * 1.0); // Full second
+
+    for (let i = 0; i < numSamples; i++) {
+      const x = 1.0 * Math.sin(2 * Math.PI * freq * i / fs);
+      const y = tf.process(x);
+      expect(Number.isFinite(y)).toBe(true);
+    }
+
+    // Also test with a DC step (worst case for flux runaway)
+    const tfDc = new TransformerModel(fs, { satAmount: 4.0, inputGain: 4.0 });
+    for (let i = 0; i < 4410; i++) {
+      const y = tfDc.process(1.0);
+      expect(Number.isFinite(y)).toBe(true);
+    }
+  });
+
   it('satAmount=0 bypasses saturation (linear passthrough)', () => {
     const fs = sampleRate;
     const tf = new TransformerModel(fs, { satAmount: 0, lfCutoff: 5 });
