@@ -62,7 +62,6 @@ type EQStandard = 'NAB' | 'IEC';
 type VariantStageId = 'recordAmp' | 'playbackAmp' | 'recordEQ' | 'playbackEQ';
 
 const VALID_TAPE_SPEEDS: readonly TapeSpeed[] = [15, 7.5, 3.75];
-const VALID_BUMP_PROFILES = ['flat', 'subtle', 'massive'] as const;
 
 // ---------------------------------------------------------------------------
 // Per-channel DSP state
@@ -164,8 +163,6 @@ class TapeProcessor extends AudioWorkletProcessor {
 
   // Track global overrides that should survive oversampling changes
   private currentFormula: string | null = null;
-  private currentAmpType: AmpType | null = null;
-  private currentBump: string | null = null;
 
   // Per-stage variant overrides that should survive oversampling changes
   private stageVariantOverrides: Map<VariantStageId, string> = new Map();
@@ -232,8 +229,6 @@ class TapeProcessor extends AudioWorkletProcessor {
         case 'set-preset': {
           this.currentPreset = this.resolvePreset(data.value);
           this.currentFormula = null;
-          this.currentAmpType = null;
-          this.currentBump = null;
           this.stageVariantOverrides.clear();
           this.stageBypassed.clear();
           this.stageFade.clear();
@@ -260,20 +255,6 @@ class TapeProcessor extends AudioWorkletProcessor {
           if (typeof data.value === 'string' && FORMULAS[data.value]) {
             this.currentFormula = data.value;
             this.applyFormula(data.value);
-          }
-          break;
-        case 'set-amp-type':
-          if (this.isAmpType(data.value)) {
-            this.currentAmpType = data.value;
-            this.stageVariantOverrides.set('recordAmp', data.value);
-            this.stageVariantOverrides.set('playbackAmp', data.value);
-            this.applyAmpType(data.value);
-          }
-          break;
-        case 'set-bump':
-          if (typeof data.value === 'string' && (VALID_BUMP_PROFILES as readonly string[]).includes(data.value)) {
-            this.currentBump = data.value;
-            this.applyBump(data.value);
           }
           break;
         case 'set-bypass':
@@ -387,24 +368,6 @@ class TapeProcessor extends AudioWorkletProcessor {
       dsp.hysteresis.setK(f.k);
       dsp.hysteresis.setBaseC(f.c);
       dsp.hysteresis.setAlpha(f.alpha);
-    }
-  }
-
-  private applyAmpType(ampType: AmpType, reapplyParams = true): void {
-    for (const dsp of this.channels) {
-      dsp.recordAmp = this.buildAmplifier(ampType, this.currentPreset.recordAmpDrive);
-      dsp.playbackAmp = this.buildAmplifier(ampType, this.currentPreset.playbackAmpDrive);
-    }
-    if (reapplyParams) {
-      this.reapplyStageParamOverrides();
-    }
-  }
-
-  private applyBump(bump: string): void {
-    for (const dsp of this.channels) {
-      if (bump === 'flat') dsp.head.setBumpGain(0);
-      else if (bump === 'subtle') dsp.head.setBumpGain(1.5);
-      else if (bump === 'massive') dsp.head.setBumpGain(3.5);
     }
   }
 
@@ -623,8 +586,6 @@ class TapeProcessor extends AudioWorkletProcessor {
 
     // Re-apply global overrides
     if (this.currentFormula) this.applyFormula(this.currentFormula);
-    if (this.currentAmpType) this.applyAmpType(this.currentAmpType, false);
-    if (this.currentBump) this.applyBump(this.currentBump);
     this.reapplyVariantOverrides();
 
     // Re-apply specific stage parameter overrides
@@ -1236,13 +1197,13 @@ class TapeProcessor extends AudioWorkletProcessor {
       this._dbgRecordMs = 0;
       this._dbgPlaybackMs = 0;
       this._dbgFrameCount = 0;
-      this._dbgSampleCount = 0;
+      this._dbgSampleCount -= sampleRate;
     }
 
     // Send meter data approximately every 50 ms
     this.meterFrame += blockSize;
     if (this.meterFrame >= this.nextMeterFrame) {
-      this.meterFrame = 0;
+      this.meterFrame -= this.nextMeterFrame;
 
       const vuDb: number[] = [];
       const peakDb: number[] = [];

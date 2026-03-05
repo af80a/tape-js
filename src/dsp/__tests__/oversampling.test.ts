@@ -124,5 +124,23 @@ describe('Oversampler', () => {
       const output = os.downsample(upsampled);
       expect(output.length).toBe(128);
     });
+
+    it('factor 16 block processing stays finite', () => {
+      const factor = 16;
+      const os = new Oversampler(factor, 64);
+      const input = new Float32Array(64);
+      for (let i = 0; i < input.length; i++) {
+        input[i] = Math.sin(2 * Math.PI * 2 * i / input.length);
+      }
+
+      const upsampled = os.upsample(input);
+      expect(upsampled.length).toBe(input.length * factor);
+
+      const output = os.downsample(upsampled);
+      expect(output.length).toBe(input.length);
+      for (let i = 0; i < output.length; i++) {
+        expect(Number.isFinite(output[i])).toBe(true);
+      }
+    });
   });
 });

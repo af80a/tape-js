@@ -10,6 +10,7 @@ interface KnobProps {
   value: number;
   step?: number;
   formatValue?: (v: number) => string;
+  displayValue?: string;
   onChange: (v: number) => void;
 }
 
@@ -36,7 +37,7 @@ const arcStart = toXY(START_ANGLE, ARC_R);
 const arcEnd = toXY(START_ANGLE + ARC_SPAN, ARC_R);
 const trackPath = `M${arcStart.x.toFixed(2)},${arcStart.y.toFixed(2)} A${ARC_R},${ARC_R} 0 1 1 ${arcEnd.x.toFixed(2)},${arcEnd.y.toFixed(2)}`;
 
-export function Knob({ label, min, max, value, step = 0, formatValue, onChange }: KnobProps) {
+export function Knob({ label, min, max, value, step = 0, formatValue, displayValue, onChange }: KnobProps) {
   const defaultValueRef = useRef(value);
   const [internalValue, setInternalValue] = useState(value);
   const lastYRef = useRef(0);
@@ -102,7 +103,7 @@ export function Knob({ label, min, max, value, step = 0, formatValue, onChange }
 
   const pct = (internalValue - min) / (max - min);
   const valueAngle = START_ANGLE + pct * ARC_SPAN;
-  const displayValue = formatValue ? formatValue(internalValue) : `${internalValue}`;
+  const valueLabel = displayValue ?? (formatValue ? formatValue(internalValue) : `${internalValue}`);
 
   // Value arc path
   const valEnd = toXY(valueAngle, ARC_R);
@@ -151,7 +152,7 @@ export function Knob({ label, min, max, value, step = 0, formatValue, onChange }
         {/* Indicator dot */}
         <circle cx={dot.x} cy={dot.y} r={DOT_R} className="knob-dot" />
       </svg>
-      <div className="knob-value">{displayValue}</div>
+      <div className="knob-value">{valueLabel}</div>
     </div>
   );
 }

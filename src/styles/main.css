@@ -283,6 +283,18 @@ body:has(.app-root--graph) {
   grid-template-columns: repeat(5, 1fr);
 }
 
+.compact-controls-row--3col {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.compact-controls-row--8col {
+  grid-template-columns: repeat(8, 1fr);
+}
+
+.compact-controls-row--9col {
+  grid-template-columns: repeat(9, 1fr);
+}
+
 .compact-controls-row .knob-container,
 .compact-controls-row .select-container,
 .compact-button-control {
@@ -759,6 +771,18 @@ body:has(.app-root--graph) {
   }
 
   .compact-controls-row--5col {
+    grid-template-columns: repeat(auto-fit, minmax(86px, 1fr));
+  }
+
+  .compact-controls-row--3col {
+    grid-template-columns: repeat(auto-fit, minmax(86px, 1fr));
+  }
+
+  .compact-controls-row--8col {
+    grid-template-columns: repeat(auto-fit, minmax(86px, 1fr));
+  }
+
+  .compact-controls-row--9col {
     grid-template-columns: repeat(auto-fit, minmax(86px, 1fr));
   }
 

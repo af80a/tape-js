@@ -20,6 +20,31 @@ interface StageParamsState {
   loadPreset: (presetName: string) => void;
 }
 
+const AMP_STAGE_IDS = ['recordAmp', 'playbackAmp'] as const satisfies readonly StageId[];
+
+function updateStageState(
+  stages: Record<StageId, StageState>,
+  stageId: StageId,
+  update: (stage: StageState) => StageState,
+): Record<StageId, StageState> {
+  return {
+    ...stages,
+    [stageId]: update(stages[stageId]),
+  };
+}
+
+function updateStageVariants(
+  stages: Record<StageId, StageState>,
+  stageIds: readonly StageId[],
+  variant: string,
+): Record<StageId, StageState> {
+  const nextStages = { ...stages };
+  for (const stageId of stageIds) {
+    nextStages[stageId] = { ...nextStages[stageId], variant };
+  }
+  return nextStages;
+}
+
 function buildStageStates(preset: MachinePreset): Record<StageId, StageState> {
   const stages = {} as Record<StageId, StageState>;
 
@@ -95,10 +120,7 @@ export const useStageParams = create<StageParamsState>((set) => ({
       value: bypassed,
     });
     set((state) => ({
-      stages: {
-        ...state.stages,
-        [stageId]: { ...state.stages[stageId], bypassed },
-      },
+      stages: updateStageState(state.stages, stageId, (stage) => ({ ...stage, bypassed })),
     }));
   },
 
@@ -109,24 +131,21 @@ export const useStageParams = create<StageParamsState>((set) => ({
       value: variant,
     });
     set((state) => ({
-      stages: {
-        ...state.stages,
-        [stageId]: { ...state.stages[stageId], variant },
-      },
+      stages: updateStageState(state.stages, stageId, (stage) => ({ ...stage, variant })),
     }));
   },
 
   setAmpType: (ampType) => {
-    useAudioEngine.getState().postMessage({
-      type: 'set-amp-type',
-      value: ampType,
-    });
+    const { postMessage } = useAudioEngine.getState();
+    for (const stageId of AMP_STAGE_IDS) {
+      postMessage({
+        type: 'set-stage-variant',
+        stageId,
+        value: ampType,
+      });
+    }
     set((state) => ({
-      stages: {
-        ...state.stages,
-        recordAmp: { ...state.stages.recordAmp, variant: ampType },
-        playbackAmp: { ...state.stages.playbackAmp, variant: ampType },
-      },
+      stages: updateStageVariants(state.stages, AMP_STAGE_IDS, ampType),
     }));
   },
 
@@ -138,23 +157,21 @@ export const useStageParams = create<StageParamsState>((set) => ({
       value,
     });
     set((state) => ({
-      stages: {
-        ...state.stages,
-        [stageId]: {
-          ...state.stages[stageId],
-          params: { ...state.stages[stageId].params, [param]: value },
-        },
-      },
+      stages: updateStageState(state.stages, stageId, (stage) => ({
+        ...stage,
+        params: { ...stage.params, [param]: value },
+      })),
     }));
   },
 
   loadPreset: (presetName) => {
     const resolvedPresetName = PRESETS[presetName] ? presetName : 'studer';
     const preset = PRESETS[resolvedPresetName];
-    useAudioEngine.getState().setMachinePreset(resolvedPresetName);
+    const nextStages = buildStageStates(preset);
+    useAudioEngine.getState().setMachinePreset(resolvedPresetName, nextStages);
     set({
       currentPreset: resolvedPresetName,
-      stages: buildStageStates(preset),
+      stages: nextStages,
     });
   },
 }));

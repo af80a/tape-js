@@ -4,6 +4,7 @@ import { WorkletBridge, createWorkletBridge, getWorkletUrl } from '../audio/work
 import { STAGE_IDS, type StageId } from '../types/stages';
 import type { WorkletMessage, WorkletResponse } from '../types/messages';
 import { audioBufferToWav, buildProcessedFileName } from '../audio/wav-export';
+import { PRESETS, type MachinePreset } from '../dsp/presets';
 import { useStageParams } from './stage-params';
 
 export interface StageMeterLevels {
@@ -20,31 +21,15 @@ export interface ScopeSnapshot {
 
 export const SCOPE_STAGE_IDS = ['inputXfmr', 'recordAmp', 'hysteresis', 'playbackAmp', 'outputXfmr'] as const;
 export type ScopeStageId = (typeof SCOPE_STAGE_IDS)[number];
+type DebugStatsResponse = Extract<WorkletResponse, { type: 'debug-stats' }>;
 
 export const SCOPE_BUFFER_SIZE = 100; // ~5 seconds at 50ms meter interval
 
 const PARAM_KEYS = ['inputGain', 'bias', 'drive', 'saturation', 'ampDrive', 'wow', 'flutter', 'hiss', 'color', 'outputGain'] as const;
 type ParamKey = (typeof PARAM_KEYS)[number];
 
-const DEFAULT_PARAMS: Record<ParamKey, number> = {
-  inputGain: 1.0,
-  bias: 0.5,
-  drive: 0.5,
-  saturation: 0.5,
-  ampDrive: 0.5,
-  wow: 0.15,
-  flutter: 0.1,
-  hiss: 0.05,
-  color: 0,
-  outputGain: 1.0,
-};
-
 function isParamKey(name: string): name is ParamKey {
   return (PARAM_KEYS as readonly string[]).includes(name);
-}
-
-function isStageId(name: string): name is StageId {
-  return (STAGE_IDS as readonly string[]).includes(name);
 }
 
 function initStageMeterState(): Record<string, StageMeterLevels> {
@@ -53,6 +38,65 @@ function initStageMeterState(): Record<string, StageMeterLevels> {
     meters[id] = { vuDb: [-60, -60], peakDb: [-60, -60] };
   }
   return meters;
+}
+
+interface StageSnapshot {
+  bypassed: boolean;
+  variant?: string;
+  params: Record<string, number>;
+}
+
+type StageSnapshotMap = Record<StageId, StageSnapshot>;
+type ActiveStageParamMap = Record<StageId, Record<string, true>>;
+
+interface WorkletSyncTarget {
+  postMessage: (msg: WorkletMessage) => void;
+  setParam: (name: string, value: number, time: number) => void;
+}
+
+function initActiveStageParams(): ActiveStageParamMap {
+  const active = {} as ActiveStageParamMap;
+  for (const id of STAGE_IDS) {
+    active[id] = {};
+  }
+  return active;
+}
+
+function resolvePreset(presetName: string): MachinePreset {
+  return PRESETS[presetName] ?? PRESETS['studer'];
+}
+
+function buildParamValuesFromPreset(preset: MachinePreset): Record<ParamKey, number> {
+  return {
+    inputGain: 1.0,
+    bias: preset.biasDefault,
+    drive: preset.drive,
+    saturation: preset.saturation,
+    ampDrive: preset.recordAmpDrive,
+    wow: preset.wowDefault,
+    flutter: preset.flutterDefault,
+    hiss: preset.hissDefault,
+    color: 0,
+    outputGain: 1.0,
+  };
+}
+
+function buildPresetStageParams(): ActiveStageParamMap {
+  const active = initActiveStageParams();
+  // Playback amp has its own preset drive and cannot be reconstructed
+  // exactly from the single global `ampDrive` AudioParam.
+  active.playbackAmp.drive = true;
+  return active;
+}
+
+function formatMetricArray(values?: number[]): string {
+  return values && values.length ? values.join('/') : 'n/a';
+}
+
+function logDebugStats(msg: DebugStatsResponse): void {
+  console.log(
+    `[tape] timer=${msg.timerSource} max=${msg.maxProcessMs}ms avg=${msg.avgProcessMs}ms (rec=${msg.avgRecordMs} pb=${msg.avgPlaybackMs}) budget=${msg.budgetMs}ms | overruns/s=${msg.overrunsPerSec} | nanAmp=${msg.nanAmpCount} | nanHyst=${msg.nanHystCount ?? 0} | rms=${formatMetricArray(msg.outRms)} peak=${formatMetricArray(msg.outPeak)} dc=${formatMetricArray(msg.outDc)} clamp=${formatMetricArray(msg.outClampHits)} nonfinOut=${formatMetricArray(msg.outNonFinite)} lrDb=${msg.lrImbalanceDb ?? 0}`
+  );
 }
 
 interface AudioEngineState {
@@ -77,7 +121,7 @@ interface AudioEngineState {
   offlineProcessing: boolean;
   offlineProgress: number;
   paramValues: Record<ParamKey, number>;
-  activeStageParamKeys: Record<string, true>;
+  activeStageParams: ActiveStageParamMap;
 
   // Actions
   toggleScope: () => void;
@@ -87,7 +131,7 @@ interface AudioEngineState {
   pause: () => void;
   stop: () => void;
   seek: (time: number) => void;
-  setMachinePreset: (preset: string) => void;
+  setMachinePreset: (preset: string, stages?: StageSnapshotMap) => void;
   setTapeSpeed: (speed: number) => void;
   setOversample: (factor: number) => void;
   setFormula: (formula: string) => void;
@@ -99,6 +143,43 @@ interface AudioEngineState {
   updateMeters: (vuDb: number[], peakDb: number[]) => void;
   updateStageMeters: (levels: Record<string, StageMeterLevels>) => void;
   updateTime: (current: number, duration: number) => void;
+}
+
+const DEFAULT_PRESET = resolvePreset('studer');
+
+function applyStateToWorklet(
+  target: WorkletSyncTarget,
+  state: Pick<
+    AudioEngineState,
+    'machinePreset' | 'tapeSpeed' | 'formula' | 'globalBypassed' | 'headroom' | 'paramValues' | 'activeStageParams'
+  >,
+  stages: StageSnapshotMap,
+  oversample: number,
+  time = 0,
+): void {
+  target.postMessage({ type: 'set-preset', value: state.machinePreset });
+  target.postMessage({ type: 'set-speed', value: state.tapeSpeed });
+  target.postMessage({ type: 'set-oversample', value: oversample });
+  target.postMessage({ type: 'set-formula', value: state.formula });
+  target.postMessage({ type: 'set-bypass', value: state.globalBypassed });
+
+  for (const key of PARAM_KEYS) {
+    target.setParam(key, state.paramValues[key], time);
+  }
+  target.setParam('headroom', state.headroom, time);
+
+  for (const stageId of STAGE_IDS) {
+    const stage = stages[stageId];
+    target.postMessage({ type: 'set-stage-bypass', stageId, value: stage.bypassed });
+    if (stage.variant) {
+      target.postMessage({ type: 'set-stage-variant', stageId, value: stage.variant });
+    }
+    for (const param of Object.keys(state.activeStageParams[stageId])) {
+      const value = stage.params[param];
+      if (typeof value !== 'number') continue;
+      target.postMessage({ type: 'set-stage-param', stageId, param, value });
+    }
+  }
 }
 
 export const useAudioEngine = create<AudioEngineState>((set, get) => ({
@@ -124,8 +205,8 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
   scopeOpen: false,
   offlineProcessing: false,
   offlineProgress: 0,
-  paramValues: { ...DEFAULT_PARAMS },
-  activeStageParamKeys: {},
+  paramValues: buildParamValuesFromPreset(DEFAULT_PRESET),
+  activeStageParams: buildPresetStageParams(),
 
   toggleScope: () => set((s) => ({ scopeOpen: !s.scopeOpen })),
 
@@ -135,19 +216,7 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
     const audioCtx = new AudioContext();
     const bridge = await createWorkletBridge(audioCtx);
     const state = get();
-    bridge.postMessage({ type: 'set-preset', value: state.machinePreset });
-    // Send amp type before oversample so initDSP (triggered by set-oversample)
-    // already knows the correct amp type and doesn't recreate amps redundantly.
-    const ampType = (useStageParams.getState().stages.recordAmp.variant ?? 'transistor') as 'tube' | 'transistor';
-    bridge.postMessage({ type: 'set-amp-type', value: ampType });
-    bridge.postMessage({ type: 'set-speed', value: state.tapeSpeed });
-    bridge.postMessage({ type: 'set-oversample', value: state.oversample });
-    bridge.postMessage({ type: 'set-formula', value: state.formula });
-    bridge.postMessage({ type: 'set-bypass', value: state.globalBypassed });
-    for (const key of PARAM_KEYS) {
-      bridge.setParam(key, state.paramValues[key], 0);
-    }
-    bridge.setParam('headroom', state.headroom, 0);
+    applyStateToWorklet(bridge, state, useStageParams.getState().stages, state.oversample);
 
     bridge.onMessage((msg) => {
       if (msg.type === 'meters') {
@@ -155,34 +224,7 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
       } else if (msg.type === 'stage-meters') {
         get().updateStageMeters(msg.levels);
       } else if (msg.type === 'debug-stats') {
-        const {
-          timerSource,
-          overrunsPerSec,
-          nanAmpCount,
-          nanHystCount,
-          outRms,
-          outDc,
-          outPeak,
-          outClampHits,
-          outNonFinite,
-          lrImbalanceDb,
-          maxProcessMs,
-          avgProcessMs,
-          avgRecordMs,
-          avgPlaybackMs,
-          budgetMs,
-        } = msg as unknown as {
-          timerSource?: 'perf' | 'date';
-          overrunsPerSec: number; nanAmpCount: number; nanHystCount?: number;
-          outRms?: number[]; outDc?: number[]; outPeak?: number[];
-          outClampHits?: number[]; outNonFinite?: number[]; lrImbalanceDb?: number;
-          maxProcessMs: number; avgProcessMs: number;
-          avgRecordMs: number; avgPlaybackMs: number; budgetMs: number;
-        };
-        const fmt = (arr?: number[]) => (arr && arr.length ? arr.join('/') : 'n/a');
-        console.log(
-          `[tape] timer=${timerSource ?? 'unknown'} max=${maxProcessMs}ms avg=${avgProcessMs}ms (rec=${avgRecordMs} pb=${avgPlaybackMs}) budget=${budgetMs}ms | overruns/s=${overrunsPerSec} | nanAmp=${nanAmpCount} | nanHyst=${nanHystCount ?? 0} | rms=${fmt(outRms)} peak=${fmt(outPeak)} dc=${fmt(outDc)} clamp=${fmt(outClampHits)} nonfinOut=${fmt(outNonFinite)} lrDb=${lrImbalanceDb ?? 0}`
-        );
+        logDebugStats(msg);
       }
     });
 
@@ -222,23 +264,39 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
     set({ currentTime: time });
   },
 
-  setMachinePreset: (preset: string) => {
+  setMachinePreset: (preset: string, stages?: StageSnapshotMap) => {
     // When changing machines, reset the character controls to match the machine's defaults
     // so the user gets the true machine experience out of the box.
-    let defaultFormula = '456';
-    if (preset === 'studer') defaultFormula = '900';
-    else if (preset === 'mci') defaultFormula = '499';
+    const resolvedPreset = resolvePreset(preset);
+    const resolvedPresetName = PRESETS[preset] ? preset : 'studer';
+    const paramValues = buildParamValuesFromPreset(resolvedPreset);
+    const activeStageParams = buildPresetStageParams();
+    const nextState = get();
+    const nextStages = stages ?? useStageParams.getState().stages;
 
-    get().bridge?.postMessage({ type: 'set-preset', value: preset });
-    get().bridge?.postMessage({ type: 'set-formula', value: defaultFormula });
-    // Amp type comes from the preset definition via initDSP — no separate
-    // set-amp-type needed. useStageParams.loadPreset sets the UI variant
-    // from preset.ampType via buildStageStates.
+    if (nextState.bridge) {
+      applyStateToWorklet(
+        nextState.bridge,
+        {
+          machinePreset: resolvedPresetName,
+          tapeSpeed: nextState.tapeSpeed,
+          formula: resolvedPreset.defaultFormula,
+          globalBypassed: nextState.globalBypassed,
+          headroom: nextState.headroom,
+          paramValues,
+          activeStageParams,
+        },
+        nextStages,
+        nextState.oversample,
+        nextState.audioCtx?.currentTime ?? 0,
+      );
+    }
 
     set({
-      machinePreset: preset,
-      formula: defaultFormula,
-      activeStageParamKeys: {},
+      machinePreset: resolvedPresetName,
+      formula: resolvedPreset.defaultFormula,
+      paramValues,
+      activeStageParams,
     });
   },
 
@@ -285,17 +343,19 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
   postMessage: (msg) => {
     get().bridge?.postMessage(msg);
     if (msg.type === 'set-stage-param') {
-      const key = `${msg.stageId}.${msg.param}`;
       set((state) => ({
-        activeStageParamKeys: {
-          ...state.activeStageParamKeys,
-          [key]: true,
+        activeStageParams: {
+          ...state.activeStageParams,
+          [msg.stageId]: {
+            ...state.activeStageParams[msg.stageId],
+            [msg.param]: true,
+          },
         },
       }));
       return;
     }
     if (msg.type === 'clear-param-overrides' || msg.type === 'set-preset') {
-      set({ activeStageParamKeys: {} });
+      set({ activeStageParams: initActiveStageParams() });
     }
   },
 
@@ -340,42 +400,13 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
       source.connect(node);
       node.connect(offlineCtx.destination);
 
-      const post = (message: WorkletMessage) => node.port.postMessage(message);
-      post({ type: 'set-preset', value: renderState.machinePreset });
-      post({ type: 'set-speed', value: renderState.tapeSpeed });
-      post({ type: 'set-oversample', value: 16 });
-      post({ type: 'set-formula', value: renderState.formula });
-      post({ type: 'set-bypass', value: renderState.globalBypassed });
-
-      for (const key of PARAM_KEYS) {
-        node.parameters.get(key)?.setValueAtTime(renderState.paramValues[key], 0);
-      }
-      node.parameters.get('headroom')?.setValueAtTime(renderState.headroom, 0);
-
-      const { stages } = useStageParams.getState();
-      for (const stageId of STAGE_IDS) {
-        const stage = stages[stageId];
-        post({ type: 'set-stage-bypass', stageId, value: stage.bypassed });
-        if (stage.variant) {
-          post({ type: 'set-stage-variant', stageId, value: stage.variant });
-        }
-      }
-
-      for (const key of Object.keys(renderState.activeStageParamKeys)) {
-        const dot = key.indexOf('.');
-        if (dot <= 0) continue;
-        const stageIdRaw = key.slice(0, dot);
-        const param = key.slice(dot + 1);
-        if (!isStageId(stageIdRaw)) continue;
-        const value = stages[stageIdRaw]?.params[param];
-        if (typeof value !== 'number') continue;
-        post({ type: 'set-stage-param', stageId: stageIdRaw, param, value });
-      }
+      const bridge = new WorkletBridge(node);
+      applyStateToWorklet(bridge, renderState, useStageParams.getState().stages, 16);
 
       source.start();
       const rendered = await offlineCtx.startRendering();
       set({ offlineProgress: 1 });
-      post({ type: 'dispose' });
+      bridge.postMessage({ type: 'dispose' });
 
       const blob = audioBufferToWav(rendered);
       const fileName = buildProcessedFileName(loader.getLoadedFileName());

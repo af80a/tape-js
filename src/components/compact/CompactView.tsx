@@ -1,10 +1,60 @@
-import { useCallback } from 'react';
 import { useAudioEngine } from '../../stores/audio-engine';
 import { useStageParams } from '../../stores/stage-params';
 import { Knob } from '../controls/Knob';
 import { Select } from '../controls/Select';
 import { ToggleButton } from '../controls/ToggleButton';
 import { FORMULAS } from '../../dsp/presets';
+import {
+  alignmentToAzimuth,
+  applyLinkedGainTrimDelta,
+  applyGroupedDelta,
+  azimuthToAlignment,
+  resolveGroupedNumberState,
+  resolveGroupedVariantValue,
+} from './compact-macros';
+
+const BUMP_PROFILES = [
+  { key: 'flat' as const, gainDb: 0 },
+  { key: 'subtle' as const, gainDb: 1.5 },
+  { key: 'massive' as const, gainDb: 3.5 },
+];
+
+const MACHINE_OPTIONS = [
+  { value: 'studer', label: 'Studer A810' },
+  { value: 'ampex', label: 'Ampex ATR-102' },
+  { value: 'mci', label: 'MCI JH-24' },
+];
+
+const FORMULA_OPTIONS = [
+  { value: '456', label: 'Ampex 456' },
+  { value: '499', label: 'Quantegy 499' },
+  { value: '900', label: 'BASF 900' },
+];
+
+const MIXED_AMP_TYPE = '__mixed__';
+
+const AMP_TYPE_OPTIONS = [
+  { value: MIXED_AMP_TYPE, label: 'Mixed', disabled: true },
+  { value: 'transistor', label: 'Solid State' },
+  { value: 'tube', label: 'Tube 12AX7' },
+];
+
+const BUMP_OPTIONS = [
+  { value: 'flat', label: 'Flat (0dB)' },
+  { value: 'subtle', label: 'Subtle (+1.5dB)' },
+  { value: 'massive', label: 'Massive (+3.5dB)' },
+];
+
+const SPEED_OPTIONS = [
+  { value: '15', label: '15 ips' },
+  { value: '7.5', label: '7.5 ips' },
+  { value: '3.75', label: '3.75 ips' },
+];
+
+const OVERSAMPLE_OPTIONS = [
+  { value: '2', label: '2x' },
+  { value: '4', label: '4x' },
+];
 
 function fmtDb(v: number): string {
   const db = 20 * Math.log10(v);
@@ -12,6 +62,14 @@ function fmtDb(v: number): string {
 }
 
 function fmtPct(v: number): string {
+  return `${Math.round(v * 100)}%`;
+}
+
+function fmtIron(v: number): string {
+  return `${v.toFixed(2)}x`;
+}
+
+function fmtAlign(v: number): string {
   return `${Math.round(v * 100)}%`;
 }
 
@@ -26,20 +84,13 @@ function fmtColor(v: number): string {
 }
 
 function bumpProfileFromGain(gainDb: number): 'flat' | 'subtle' | 'massive' {
-  const profiles = [
-    { key: 'flat' as const, gainDb: 0 },
-    { key: 'subtle' as const, gainDb: 1.5 },
-    { key: 'massive' as const, gainDb: 3.5 },
-  ];
-  return profiles.reduce((best, next) =>
+  return BUMP_PROFILES.reduce((best, next) =>
     Math.abs(next.gainDb - gainDb) < Math.abs(best.gainDb - gainDb) ? next : best
   ).key;
 }
 
 function bumpGainFromProfile(profile: string): number {
-  if (profile === 'flat') return 0;
-  if (profile === 'subtle') return 1.5;
-  return 3.5;
+  return BUMP_PROFILES.find((entry) => entry.key === profile)?.gainDb ?? 3.5;
 }
 
 interface CompactViewProps {
@@ -52,7 +103,6 @@ export function CompactView({ onPresetChange }: CompactViewProps) {
   const oversample = useAudioEngine((s) => s.oversample);
   const formula = useAudioEngine((s) => s.formula);
   const stages = useStageParams((s) => s.stages);
-  const ampType = useStageParams((s) => s.stages.recordAmp.variant) as 'tube' | 'transistor';
   const setGlobalBypass = useAudioEngine((s) => s.setGlobalBypass);
   const setHeadroom = useAudioEngine((s) => s.setHeadroom);
   const setTapeSpeed = useAudioEngine((s) => s.setTapeSpeed);
@@ -63,10 +113,19 @@ export function CompactView({ onPresetChange }: CompactViewProps) {
   const preset = useStageParams((s) => s.currentPreset);
   const setStageParam = useStageParams((s) => s.setStageParam);
   const inputGain = stages.inputXfmr.params.inputGain ?? 1.0;
+  const outputPushGain = stages.outputXfmr.params.inputGain ?? 1.0;
+  const inputTrim = stages.inputXfmr.params._trim ?? 0;
+  const outputTrim = stages.outputXfmr.params._trim ?? 0;
+  const inputIron = stages.inputXfmr.params.satAmount ?? 1.0;
+  const outputIron = stages.outputXfmr.params.satAmount ?? 1.0;
+  const alignment = azimuthToAlignment(stages.head.params.azimuth ?? 1.0);
+  const bleed = stages.head.params.crosstalk ?? 0.006;
+  const wear = stages.head.params.dropouts ?? 0.0;
   const biasLevel = stages.bias.params.level ?? 0.5;
   const hysteresisSaturation = stages.hysteresis.params.saturation ?? 0.5;
   const hysteresisDrive = stages.hysteresis.params.drive ?? 0.5;
   const recordAmpDrive = stages.recordAmp.params.drive ?? 0.5;
+  const playbackAmpDrive = stages.playbackAmp.params.drive ?? 0.4;
   const wow = stages.transport.params.wow ?? 0.15;
   const flutter = stages.transport.params.flutter ?? 0.1;
   const hiss = stages.noise.params.hiss ?? 0.05;
@@ -74,71 +133,83 @@ export function CompactView({ onPresetChange }: CompactViewProps) {
   const outputGain = stages.output.params.outputGain ?? 1.0;
   const headBump = stages.head.params.bumpGainDb ?? 0;
   const bump = bumpProfileFromGain(headBump);
+  const ampType = resolveGroupedVariantValue([stages.recordAmp.variant, stages.playbackAmp.variant], MIXED_AMP_TYPE);
+  const pushState = resolveGroupedNumberState([inputGain, outputPushGain]);
+  const ironState = resolveGroupedNumberState([inputIron, outputIron]);
+  const ampDriveState = resolveGroupedNumberState([recordAmpDrive, playbackAmpDrive]);
 
-  const handleBypass = useCallback(
-    (v: boolean) => {
-      setGlobalBypass(v);
-    },
-    [setGlobalBypass],
-  );
+  const handleFormulaChange = (value: string) => {
+    setFormula(value);
+    const f = FORMULAS[value];
+    if (f) {
+      setStageParam('hysteresis', 'k', f.k);
+      setStageParam('hysteresis', 'c', f.c);
+    }
+  };
 
-  const handlePresetChange = useCallback(
-    (v: string) => {
-      onPresetChange(v);
-    },
-    [onPresetChange],
-  );
+  const handleAmpDriveChange = (value: number) => {
+    const [nextRecordDrive, nextPlaybackDrive] = applyGroupedDelta(
+      [recordAmpDrive, playbackAmpDrive],
+      value,
+      0,
+      1,
+    );
+    setStageParam('recordAmp', 'drive', nextRecordDrive);
+    setStageParam('playbackAmp', 'drive', nextPlaybackDrive);
+  };
 
-  const handleSpeedChange = useCallback(
-    (v: string) => {
-      setTapeSpeed(parseFloat(v));
-    },
-    [setTapeSpeed],
-  );
+  const handleIronChange = (value: number) => {
+    const [nextInputIron, nextOutputIron] = applyGroupedDelta(
+      [inputIron, outputIron],
+      value,
+      0,
+      2,
+    );
+    setStageParam('inputXfmr', 'satAmount', nextInputIron);
+    setStageParam('outputXfmr', 'satAmount', nextOutputIron);
+  };
 
-  const handleOversampleChange = useCallback(
-    (v: string) => {
-      setOversample(parseInt(v, 10));
-    },
-    [setOversample],
-  );
+  const handlePushChange = (value: number) => {
+    const { gains, trims } = applyLinkedGainTrimDelta(
+      [inputGain, outputPushGain],
+      [inputTrim, outputTrim],
+      value,
+      0.25,
+      4,
+      -12,
+      12,
+    );
+    setStageParam('inputXfmr', 'inputGain', gains[0]);
+    setStageParam('inputXfmr', '_trim', trims[0]);
+    setStageParam('outputXfmr', 'inputGain', gains[1]);
+    setStageParam('outputXfmr', '_trim', trims[1]);
+  };
 
-  const handleFormulaChange = useCallback(
-    (v: string) => {
-      setFormula(v);
-      const f = FORMULAS[v];
-      if (f) {
-        setStageParam('hysteresis', 'k', f.k);
-        setStageParam('hysteresis', 'c', f.c);
-      }
-    },
-    [setFormula, setStageParam],
-  );
-
-  const handleAmpTypeChange = useCallback(
-    (v: string) => {
-      setAmpType(v as 'tube' | 'transistor');
-    },
-    [setAmpType],
-  );
-
-  const handleBumpChange = useCallback(
-    (v: string) => {
-      setStageParam('head', 'bumpGainDb', bumpGainFromProfile(v));
-    },
-    [setStageParam],
-  );
+  const handleAlignmentChange = (value: number) => {
+    setStageParam('head', 'azimuth', alignmentToAzimuth(value));
+  };
 
   return (
     <div className="compact-controls">
       {/* Section 1: Character */}
       <section className="compact-section">
         <h3 className="compact-section__label">Character</h3>
-        <div className="controls-row compact-controls-row">
+        <div className="controls-row compact-controls-row compact-controls-row--9col">
           <Knob
             label="INPUT" min={0.25} max={4} value={inputGain}
             formatValue={fmtDb}
             onChange={(v) => { setStageParam('inputXfmr', 'inputGain', v); }}
+          />
+          <Knob
+            label="PUSH" min={0.25} max={4} value={pushState.value}
+            formatValue={fmtDb}
+            displayValue={pushState.mixed ? `Mixed ${fmtDb(pushState.value)}` : undefined}
+            onChange={handlePushChange}
+          />
+          <Knob
+            label="IRON" min={0} max={2} value={ironState.value}
+            formatValue={fmtIron}
+            onChange={handleIronChange}
           />
           <Knob
             label="BIAS" min={0} max={1} value={biasLevel}
@@ -156,12 +227,10 @@ export function CompactView({ onPresetChange }: CompactViewProps) {
             onChange={(v) => { setStageParam('hysteresis', 'drive', v); }}
           />
           <Knob
-            label="AMP" min={0} max={1} value={recordAmpDrive}
+            label="AMP" min={0} max={1} value={ampDriveState.value}
             formatValue={fmtPct}
-            onChange={(v) => {
-              setStageParam('recordAmp', 'drive', v);
-              setStageParam('playbackAmp', 'drive', Math.max(0, Math.min(1, v * 0.8)));
-            }}
+            displayValue={ampDriveState.mixed ? `Mixed ${fmtPct(ampDriveState.value)}` : undefined}
+            onChange={handleAmpDriveChange}
           />
           <Knob
             label="WOW" min={0} max={1} value={wow}
@@ -182,69 +251,66 @@ export function CompactView({ onPresetChange }: CompactViewProps) {
         <div className="controls-row compact-controls-row compact-controls-row--6col">
           <Select
             label="MACHINE"
-            options={[
-              { value: 'studer', label: 'Studer A810' },
-              { value: 'ampex', label: 'Ampex ATR-102' },
-              { value: 'mci', label: 'MCI JH-24' },
-            ]}
+            options={MACHINE_OPTIONS}
             value={preset}
-            onChange={handlePresetChange}
+            onChange={onPresetChange}
           />
           <Select
             label="FORMULA"
-            options={[
-              { value: '456', label: 'Ampex 456' },
-              { value: '499', label: 'Quantegy 499' },
-              { value: '900', label: 'BASF 900' },
-            ]}
+            options={FORMULA_OPTIONS}
             value={formula}
             onChange={handleFormulaChange}
           />
           <Select
             label="AMP TYPE"
-            options={[
-              { value: 'transistor', label: 'Solid State' },
-              { value: 'tube', label: 'Tube 12AX7' },
-            ]}
+            options={AMP_TYPE_OPTIONS}
             value={ampType}
-            onChange={handleAmpTypeChange}
+            onChange={(value) => {
+              if (value !== MIXED_AMP_TYPE) {
+                setAmpType(value as 'tube' | 'transistor');
+              }
+            }}
           />
           <Select
             label="BUMP"
-            options={[
-              { value: 'flat', label: 'Flat (0dB)' },
-              { value: 'subtle', label: 'Subtle (+1.5dB)' },
-              { value: 'massive', label: 'Massive (+3.5dB)' },
-            ]}
+            options={BUMP_OPTIONS}
             value={bump}
-            onChange={handleBumpChange}
+            onChange={(value) => { setStageParam('head', 'bumpGainDb', bumpGainFromProfile(value)); }}
           />
           <Select
             label="SPEED"
-            options={[
-              { value: '15', label: '15 ips' },
-              { value: '7.5', label: '7.5 ips' },
-              { value: '3.75', label: '3.75 ips' },
-            ]}
+            options={SPEED_OPTIONS}
             value={String(tapeSpeed)}
-            onChange={handleSpeedChange}
+            onChange={(value) => { setTapeSpeed(parseFloat(value)); }}
           />
           <Select
             label="OS"
-            options={[
-              { value: '2', label: '2x' },
-              { value: '4', label: '4x' },
-            ]}
+            options={OVERSAMPLE_OPTIONS}
             value={String(oversample)}
-            onChange={handleOversampleChange}
+            onChange={(value) => { setOversample(parseInt(value, 10)); }}
           />
         </div>
       </section>
 
       {/* Section 3: Output */}
       <section className="compact-section">
-        <h3 className="compact-section__label">Output</h3>
+        <h3 className="compact-section__label">Texture</h3>
         <div className="controls-row compact-controls-row compact-controls-row--5col">
+          <Knob
+            label="ALIGN" min={0} max={1} value={alignment}
+            formatValue={fmtAlign}
+            onChange={handleAlignmentChange}
+          />
+          <Knob
+            label="BLEED" min={0} max={0.25} value={bleed} step={0.001}
+            formatValue={fmtPct}
+            onChange={(v) => { setStageParam('head', 'crosstalk', v); }}
+          />
+          <Knob
+            label="WEAR" min={0} max={1} value={wear} step={0.01}
+            formatValue={fmtPct}
+            onChange={(v) => { setStageParam('head', 'dropouts', v); }}
+          />
           <Knob
             label="HISS" min={0} max={1} value={hiss}
             formatValue={fmtPct}
@@ -255,6 +321,13 @@ export function CompactView({ onPresetChange }: CompactViewProps) {
             formatValue={fmtColor}
             onChange={(v) => { setStageParam('recordEQ', 'color', v); }}
           />
+        </div>
+      </section>
+
+      {/* Section 4: Output */}
+      <section className="compact-section">
+        <h3 className="compact-section__label">Output</h3>
+        <div className="controls-row compact-controls-row compact-controls-row--3col">
           <Knob
             label="HEADROOM" min={6} max={36} value={headroom} step={1}
             formatValue={fmtRef}
@@ -271,7 +344,7 @@ export function CompactView({ onPresetChange }: CompactViewProps) {
               label="BYPASS"
               className="bypass-btn"
               active={bypassed}
-              onToggle={handleBypass}
+              onToggle={setGlobalBypass}
             />
           </div>
         </div>
