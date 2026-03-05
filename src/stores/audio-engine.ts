@@ -65,7 +65,6 @@ interface AudioEngineState {
   tapeSpeed: number;
   oversample: number;
   formula: string;
-  bump: string;
   headroom: number;
   currentTime: number;
   duration: number;
@@ -92,7 +91,6 @@ interface AudioEngineState {
   setTapeSpeed: (speed: number) => void;
   setOversample: (factor: number) => void;
   setFormula: (formula: string) => void;
-  setBump: (bump: string) => void;
   setHeadroom: (headroom: number) => void;
   setGlobalBypass: (bypassed: boolean) => void;
   setParam: (name: string, value: number) => void;
@@ -112,8 +110,7 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
   machinePreset: 'studer',
   tapeSpeed: 15,
   oversample: 2,
-  formula: '456',
-  bump: 'flat',
+  formula: '900',
   headroom: 18,
   currentTime: 0,
   duration: 0,
@@ -146,7 +143,6 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
     bridge.postMessage({ type: 'set-speed', value: state.tapeSpeed });
     bridge.postMessage({ type: 'set-oversample', value: state.oversample });
     bridge.postMessage({ type: 'set-formula', value: state.formula });
-    bridge.postMessage({ type: 'set-bump', value: state.bump });
     bridge.postMessage({ type: 'set-bypass', value: state.globalBypassed });
     for (const key of PARAM_KEYS) {
       bridge.setParam(key, state.paramValues[key], 0);
@@ -235,7 +231,6 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
 
     get().bridge?.postMessage({ type: 'set-preset', value: preset });
     get().bridge?.postMessage({ type: 'set-formula', value: defaultFormula });
-    get().bridge?.postMessage({ type: 'set-bump', value: 'flat' });
     // Amp type comes from the preset definition via initDSP — no separate
     // set-amp-type needed. useStageParams.loadPreset sets the UI variant
     // from preset.ampType via buildStageStates.
@@ -243,7 +238,6 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
     set({
       machinePreset: preset,
       formula: defaultFormula,
-      bump: 'flat',
       activeStageParamKeys: {},
     });
   },
@@ -263,11 +257,6 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
   setFormula: (formula: string) => {
     get().bridge?.postMessage({ type: 'set-formula', value: formula });
     set({ formula });
-  },
-
-  setBump: (bump: string) => {
-    get().bridge?.postMessage({ type: 'set-bump', value: bump });
-    set({ bump });
   },
 
   setHeadroom: (headroom: number) => {
@@ -356,7 +345,6 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
       post({ type: 'set-speed', value: renderState.tapeSpeed });
       post({ type: 'set-oversample', value: 16 });
       post({ type: 'set-formula', value: renderState.formula });
-      post({ type: 'set-bump', value: renderState.bump });
       post({ type: 'set-bypass', value: renderState.globalBypassed });
 
       for (const key of PARAM_KEYS) {

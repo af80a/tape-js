@@ -4,6 +4,7 @@ import { useStageParams } from '../../stores/stage-params';
 import { Knob } from '../controls/Knob';
 import { Select } from '../controls/Select';
 import { ToggleButton } from '../controls/ToggleButton';
+import { FORMULAS } from '../../dsp/presets';
 
 function fmtDb(v: number): string {
   const db = 20 * Math.log10(v);
@@ -24,34 +25,55 @@ function fmtColor(v: number): string {
   return 'Neutral';
 }
 
+function bumpProfileFromGain(gainDb: number): 'flat' | 'subtle' | 'massive' {
+  const profiles = [
+    { key: 'flat' as const, gainDb: 0 },
+    { key: 'subtle' as const, gainDb: 1.5 },
+    { key: 'massive' as const, gainDb: 3.5 },
+  ];
+  return profiles.reduce((best, next) =>
+    Math.abs(next.gainDb - gainDb) < Math.abs(best.gainDb - gainDb) ? next : best
+  ).key;
+}
+
+function bumpGainFromProfile(profile: string): number {
+  if (profile === 'flat') return 0;
+  if (profile === 'subtle') return 1.5;
+  return 3.5;
+}
+
 interface CompactViewProps {
   onPresetChange: (preset: string) => void;
 }
 
 export function CompactView({ onPresetChange }: CompactViewProps) {
-  const setParam = useAudioEngine((s) => s.setParam);
   const bypassed = useAudioEngine((s) => s.globalBypassed);
   const tapeSpeed = useAudioEngine((s) => s.tapeSpeed);
   const oversample = useAudioEngine((s) => s.oversample);
   const formula = useAudioEngine((s) => s.formula);
+  const stages = useStageParams((s) => s.stages);
   const ampType = useStageParams((s) => s.stages.recordAmp.variant) as 'tube' | 'transistor';
-  const bump = useAudioEngine((s) => s.bump);
   const setGlobalBypass = useAudioEngine((s) => s.setGlobalBypass);
   const setHeadroom = useAudioEngine((s) => s.setHeadroom);
   const setTapeSpeed = useAudioEngine((s) => s.setTapeSpeed);
   const setOversample = useAudioEngine((s) => s.setOversample);
   const setFormula = useAudioEngine((s) => s.setFormula);
   const setAmpType = useStageParams((s) => s.setAmpType);
-  const setBump = useAudioEngine((s) => s.setBump);
-  const postMessage = useAudioEngine((s) => s.postMessage);
+  const headroom = useAudioEngine((s) => s.headroom);
   const preset = useStageParams((s) => s.currentPreset);
   const setStageParam = useStageParams((s) => s.setStageParam);
-
-  // Clear graph-view overrides each time a compact knob is touched,
-  // so AudioParam values take effect in the worklet.
-  const clearOverrides = useCallback(() => {
-    postMessage({ type: 'clear-param-overrides' });
-  }, [postMessage]);
+  const inputGain = stages.inputXfmr.params.inputGain ?? 1.0;
+  const biasLevel = stages.bias.params.level ?? 0.5;
+  const hysteresisSaturation = stages.hysteresis.params.saturation ?? 0.5;
+  const hysteresisDrive = stages.hysteresis.params.drive ?? 0.5;
+  const recordAmpDrive = stages.recordAmp.params.drive ?? 0.5;
+  const wow = stages.transport.params.wow ?? 0.15;
+  const flutter = stages.transport.params.flutter ?? 0.1;
+  const hiss = stages.noise.params.hiss ?? 0.05;
+  const color = stages.recordEQ.params.color ?? 0;
+  const outputGain = stages.output.params.outputGain ?? 1.0;
+  const headBump = stages.head.params.bumpGainDb ?? 0;
+  const bump = bumpProfileFromGain(headBump);
 
   const handleBypass = useCallback(
     (v: boolean) => {
@@ -84,8 +106,13 @@ export function CompactView({ onPresetChange }: CompactViewProps) {
   const handleFormulaChange = useCallback(
     (v: string) => {
       setFormula(v);
+      const f = FORMULAS[v];
+      if (f) {
+        setStageParam('hysteresis', 'k', f.k);
+        setStageParam('hysteresis', 'c', f.c);
+      }
     },
-    [setFormula],
+    [setFormula, setStageParam],
   );
 
   const handleAmpTypeChange = useCallback(
@@ -97,9 +124,9 @@ export function CompactView({ onPresetChange }: CompactViewProps) {
 
   const handleBumpChange = useCallback(
     (v: string) => {
-      setBump(v);
+      setStageParam('head', 'bumpGainDb', bumpGainFromProfile(v));
     },
-    [setBump],
+    [setStageParam],
   );
 
   return (
@@ -109,39 +136,42 @@ export function CompactView({ onPresetChange }: CompactViewProps) {
         <h3 className="compact-section__label">Character</h3>
         <div className="controls-row compact-controls-row">
           <Knob
-            label="INPUT" min={0.25} max={4} value={1}
+            label="INPUT" min={0.25} max={4} value={inputGain}
             formatValue={fmtDb}
-            onChange={(v) => { clearOverrides(); setParam('inputGain', v); }}
+            onChange={(v) => { setStageParam('inputXfmr', 'inputGain', v); }}
           />
           <Knob
-            label="BIAS" min={0} max={1} value={0.5}
+            label="BIAS" min={0} max={1} value={biasLevel}
             formatValue={fmtPct}
-            onChange={(v) => { clearOverrides(); setParam('bias', v); }}
+            onChange={(v) => { setStageParam('bias', 'level', v); }}
           />
           <Knob
-            label="SAT" min={0} max={1} value={0.5}
+            label="SAT" min={0} max={1} value={hysteresisSaturation}
             formatValue={fmtPct}
-            onChange={(v) => { clearOverrides(); setParam('saturation', v); }}
+            onChange={(v) => { setStageParam('hysteresis', 'saturation', v); }}
           />
           <Knob
-            label="DRIVE" min={0} max={1} value={0.5}
+            label="DRIVE" min={0} max={1} value={hysteresisDrive}
             formatValue={fmtPct}
-            onChange={(v) => { clearOverrides(); setParam('drive', v); }}
+            onChange={(v) => { setStageParam('hysteresis', 'drive', v); }}
           />
           <Knob
-            label="AMP" min={0} max={1} value={0.5}
+            label="AMP" min={0} max={1} value={recordAmpDrive}
             formatValue={fmtPct}
-            onChange={(v) => { clearOverrides(); setParam('ampDrive', v); }}
+            onChange={(v) => {
+              setStageParam('recordAmp', 'drive', v);
+              setStageParam('playbackAmp', 'drive', Math.max(0, Math.min(1, v * 0.8)));
+            }}
           />
           <Knob
-            label="WOW" min={0} max={1} value={0.15}
+            label="WOW" min={0} max={1} value={wow}
             formatValue={fmtPct}
-            onChange={(v) => { clearOverrides(); setParam('wow', v); }}
+            onChange={(v) => { setStageParam('transport', 'wow', v); }}
           />
           <Knob
-            label="FLUTTER" min={0} max={1} value={0.1}
+            label="FLUTTER" min={0} max={1} value={flutter}
             formatValue={fmtPct}
-            onChange={(v) => { clearOverrides(); setParam('flutter', v); }}
+            onChange={(v) => { setStageParam('transport', 'flutter', v); }}
           />
         </div>
       </section>
@@ -216,24 +246,24 @@ export function CompactView({ onPresetChange }: CompactViewProps) {
         <h3 className="compact-section__label">Output</h3>
         <div className="controls-row compact-controls-row compact-controls-row--5col">
           <Knob
-            label="HISS" min={0} max={1} value={0.05}
+            label="HISS" min={0} max={1} value={hiss}
             formatValue={fmtPct}
-            onChange={(v) => { clearOverrides(); setParam('hiss', v); }}
+            onChange={(v) => { setStageParam('noise', 'hiss', v); }}
           />
           <Knob
-            label="COLOR" min={-1} max={1} value={0} step={0.01}
+            label="COLOR" min={-1} max={1} value={color} step={0.01}
             formatValue={fmtColor}
-            onChange={(v) => { clearOverrides(); setParam('color', v); }}
+            onChange={(v) => { setStageParam('recordEQ', 'color', v); }}
           />
           <Knob
-            label="HEADROOM" min={6} max={36} value={18} step={1}
+            label="HEADROOM" min={6} max={36} value={headroom} step={1}
             formatValue={fmtRef}
-            onChange={(v) => { clearOverrides(); setHeadroom(v); }}
+            onChange={(v) => { setHeadroom(v); }}
           />
           <Knob
-            label="OUTPUT" min={0.25} max={16} value={1}
+            label="OUTPUT" min={0.25} max={16} value={outputGain}
             formatValue={fmtDb}
-            onChange={(v) => { clearOverrides(); setParam('outputGain', v); }}
+            onChange={(v) => { setStageParam('output', 'outputGain', v); }}
           />
           <div className="compact-button-control">
             <div className="select-label">Global</div>
