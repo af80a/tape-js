@@ -18,4 +18,23 @@ export type WorkletMessage =
 /** Messages received FROM the worklet via port.onmessage */
 export type WorkletResponse =
   | { type: 'meters'; vuDb: number[]; peakDb: number[] }
-  | { type: 'stage-meters'; levels: Record<string, { vuDb: number[]; peakDb: number[]; saturation?: number }> };
+  | { type: 'stage-meters'; levels: Record<string, { vuDb: number[]; peakDb: number[]; saturation?: number }> }
+  | { type: 'render-progress'; progress: number }
+  | {
+      type: 'debug-stats';
+      timerSource: 'perf' | 'date';
+      overrunsPerSec: number;
+      nanAmpCount: number;
+      nanHystCount?: number;
+      outRms?: number[];
+      outDc?: number[];
+      outPeak?: number[];
+      outClampHits?: number[];
+      outNonFinite?: number[];
+      lrImbalanceDb?: number;
+      maxProcessMs: number;
+      avgProcessMs: number;
+      avgRecordMs: number;
+      avgPlaybackMs: number;
+      budgetMs: number;
+    };

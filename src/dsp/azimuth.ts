@@ -49,6 +49,7 @@
  */
 
 const TWO_PI = 2 * Math.PI;
+const MAX_AZIMUTH_ARCMIN = 30;
 
 // 1 arcminute in radians
 const ARCMIN_TO_RAD = Math.PI / (180 * 60);
@@ -105,25 +106,22 @@ export class AzimuthModel {
     this.driftRate1 = TWO_PI * 0.11 / sampleRate;
     this.driftRate2 = TWO_PI * 0.73 / sampleRate;
 
-    // Buffer sizing: worst-case delay at maximum realistic azimuth.
-    // 12 arcmin azimuth, widest track spacing (ATR-102: 6.86mm),
-    // slowest speed (7.5 ips = 0.190 m/s), with drift headroom:
-    //   delay = 6.86e-3 * tan(12 arcmin) / 0.190 * fs
-    //         = 6.86e-3 * 3.49e-3 / 0.190 * 48000 ≈ 6.05 samples
-    // With drift (azimuth can swing ±20% beyond static): ~7.3 samples.
-    // Add interpolation headroom (cubic needs ±1 extra sample).
-    // 16 samples is generous for all configurations.
+    // Buffer sizing: creative range up to 30 arcmin, widest spacing (6.86mm),
+    // slowest speed (3.75 ips = 0.095 m/s), with ±20% drift headroom:
+    //   delay ≈ 6.86e-3 * tan(30 arcmin) / 0.095 * 48000 ≈ 30.2 samples
+    // With drift: ~36.2 samples. Add baseDelay=8 and interpolation headroom.
+    // 64 samples safely covers this range.
     this.baseDelay = 8;
-    this.bufferSize = 20;
+    this.bufferSize = 64;
     this.buffer = new Float64Array(this.bufferSize);
   }
 
   /**
    * Set the static azimuth error.
-   * @param arcminutes  Error magnitude in arcminutes (0 = perfect, 6 = drifted)
+   * @param arcminutes  Error magnitude in arcminutes (0 = perfect, 30 = creative extreme)
    */
   setAzimuth(arcminutes: number): void {
-    this.staticAzimuth = Math.max(0, arcminutes) * ARCMIN_TO_RAD;
+    this.staticAzimuth = Math.max(0, Math.min(MAX_AZIMUTH_ARCMIN, arcminutes)) * ARCMIN_TO_RAD;
     // Drift depth tracks static error: ~20% of static value plus
     // a small constant floor (0.1 arcmin) so there's always some
     // subtle tape weave even on a "perfectly" aligned machine.

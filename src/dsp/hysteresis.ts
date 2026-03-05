@@ -7,6 +7,12 @@
  */
 
 const C_MAX = 0.99;
+const H_LIMIT = 256;
+const DEN_EPS = 1e-9;
+
+function clamp(v: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, v));
+}
 
 /**
  * Per-sample hysteresis processor implementing the Jiles-Atherton model.
@@ -124,13 +130,23 @@ export class HysteresisProcessor {
    * @returns The magnetization output, normalized by upperLim
    */
   process(input: number): number {
-    const H = input;
+    if (!Number.isFinite(input)) {
+      this.reset();
+      return 0;
+    }
+
+    // Extreme field values are non-physical and can destabilize the derivative path.
+    const H = clamp(input, -H_LIMIT, H_LIMIT);
     const T = this.T;
 
     // Alpha-transform derivative of H
-    const H_d =
+    const H_d_raw =
       ((1 + this.dAlpha) / T) * (H - this.H_n1) -
       this.dAlpha * this.H_d_n1;
+    // dH/dt bound from physical tape/head bandwidth. Keeps pathological transients
+    // from exploding the ODE while leaving normal audio behavior unchanged.
+    const H_d_limit = 2 * Math.PI * 80_000 * (1 + Math.abs(H));
+    const H_d = clamp(H_d_raw, -H_d_limit, H_d_limit);
 
     // Midpoint values for RK4
     const H_mid = (H + this.H_n1) * 0.5;
@@ -150,7 +166,14 @@ export class HysteresisProcessor {
     const k3 = T * this.dMdt(this.M_n1 + k2 * 0.5, H_mid,  H_d_mid,     cMid);
     const k4 = T * this.dMdt(this.M_n1 + k3,     H,         H_d,         c4);
 
-    const M_new = this.M_n1 + (k1 + 2 * k2 + 2 * k3 + k4) / 6;
+    let M_new = this.M_n1 + (k1 + 2 * k2 + 2 * k3 + k4) / 6;
+    if (!Number.isFinite(M_new)) {
+      this.reset();
+      return 0;
+    }
+    // Keep magnetization within a wide but finite envelope to avoid runaway.
+    const mLimit = this.Ms * 8;
+    M_new = clamp(M_new, -mLimit, mLimit);
 
     // Update state for next sample
     this.M_n1 = M_new;
@@ -159,8 +182,8 @@ export class HysteresisProcessor {
 
     // Normalize by Ms so output stays in roughly [-1, 1] range
     const out = M_new / this.Ms;
-    // NaN safety: if the model diverges, output silence rather than poisoning downstream
-    if (out !== out) { // fast NaN check
+    // Non-finite safety: if the model diverges, output silence rather than poisoning downstream.
+    if (!Number.isFinite(out)) {
       this.M_n1 = 0;
       this.H_n1 = 0;
       this.H_d_n1 = 0;
@@ -189,6 +212,7 @@ export class HysteresisProcessor {
    */
   private dMdt(M: number, H: number, H_d: number, c: number): number {
     const Q = (H + this.alpha * M) / this.a;
+    if (!Number.isFinite(Q)) return 0;
 
     let L: number; // Langevin function value
     let Ld: number; // Langevin function derivative
@@ -222,24 +246,23 @@ export class HysteresisProcessor {
     // f1: irreversible magnetization component
     // Denominator is delta*k - alpha*M_diff (no (1-c) factor on k).
     const f1_denom = delta * this.k - this.alpha * M_diff;
-    let f1: number;
-    if (Math.abs(f1_denom) < 1e-12) {
-      f1 = 0; // protect against division by zero
-    } else {
-      f1 = kap1 * M_diff / f1_denom;
-    }
+    const f1_denom_safe = Math.abs(f1_denom) < DEN_EPS
+      ? (f1_denom < 0 ? -DEN_EPS : DEN_EPS)
+      : f1_denom;
+    const f1 = kap1 * M_diff / f1_denom_safe;
 
     // f2: reversible magnetization component
     const f2 = Ld * c * this.Ms / this.a;
 
     // f3: denominator correction factor
     const f3 = 1 - Ld * this.alpha * c * this.Ms / this.a;
+    const f3_safe = Math.abs(f3) < DEN_EPS ? (f3 < 0 ? -DEN_EPS : DEN_EPS) : f3;
 
-    // Protect against f3 near zero
-    if (Math.abs(f3) < 1e-12) {
-      return 0;
-    }
+    const slope = H_d * (f1 + f2) / f3_safe;
+    if (!Number.isFinite(slope)) return 0;
 
-    return H_d * (f1 + f2) / f3;
+    // Bound dM per sample to avoid solver runaway on pathological transients.
+    const dMdtLimit = (4 * this.Ms) / this.T;
+    return clamp(slope, -dMdtLimit, dMdtLimit);
   }
 }

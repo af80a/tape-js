@@ -136,6 +136,31 @@ describe('HysteresisProcessor', () => {
     }
   });
 
+  it('remains finite and bounded under hot clipped transients at high sample rates', () => {
+    const sr = 48000 * 8; // matches 8x oversampled worklet path
+    const hp = new HysteresisProcessor(sr);
+    hp.setDrive(1.0);
+    hp.setSaturation(1.0);
+    hp.setBias(0.1);
+    hp.setK(0.3);
+    hp.setAlpha(5e-3);
+
+    let maxAbs = 0;
+    for (let i = 0; i < sr; i++) {
+      const t = i / sr;
+      // Hot clipped fundamental plus HF edge content to stress dH/dt.
+      const x =
+        24 * Math.sign(Math.sin(2 * Math.PI * 70 * t)) +
+        6 * Math.sin(2 * Math.PI * 11000 * t);
+      const y = hp.process(x);
+      expect(Number.isFinite(y)).toBe(true);
+      maxAbs = Math.max(maxAbs, Math.abs(y));
+    }
+
+    // Guard against runaway outputs that can turn into broadband crackle/noise.
+    expect(maxAbs).toBeLessThan(8);
+  });
+
   describe('bias as reversibility (parametric bias model)', () => {
     it('setBias exists and accepts 0-1 range', () => {
       const hp = new HysteresisProcessor(sampleRate);

@@ -52,6 +52,9 @@ export class TransformerModel {
   private currentWlf = 0; // Omega of LF cutoff
   private readonly coreStiffness: number;
 
+  // Saturation depth cached inside the Newton loop — getSaturationDepth() is free (no extra exp).
+  private _cachedSatDepth = 0;
+
   // Downstream Linear Components
   private readonly lpf: BiquadFilter;
   private eddyZ1 = 0;
@@ -137,6 +140,7 @@ export class TransformerModel {
       // Fast path: perfectly linear (satAmount = 0, asymmetry = 0)
       // This collapses exactly into a pristine digital 1-pole HPF.
       phi = C / (wlf + twoOverT);
+      this._cachedSatDepth = 0;
     } else {
       // Newton-Raphson Iteration using cosh²(K*Φ) magnetizing current.
       // F(Φ) = ω_LF * Φ * cosh²(K*Φ) * (1 + a*K*Φ) + (2/T)*Φ - C = 0
@@ -158,22 +162,25 @@ export class TransformerModel {
         const coshKphi = (e + eInv) * 0.5;
         const cosh2 = coshKphi * coshKphi;
         const sinh2Kphi = (e * e - eInv * eInv) * 0.5; // sinh(2*K*Φ)
-
         const tilt = 1.0 + a * Kphi;
+
+        // dI/dΦ = ω_LF * [cosh²*(1+2a*K*Φ) + K*Φ*sinh(2*K*Φ)*(1+a*K*Φ)]
+        // Shared between F'(Φ) (Newton denominator) and saturation depth.
+        // Guard: clamp to twoOverT so dF stays positive even when asymmetry
+        // pushes the nonlinear term negative (sign-flip divergence prevention).
+        const dIdPhi = wlf * (cosh2 * (1.0 + 2.0 * a * Kphi) +
+                               K * phi * sinh2Kphi * tilt);
+        const dF = Math.max(twoOverT, dIdPhi + twoOverT);
+
+        // Cache saturation depth: reuses dIdPhi already computed above.
+        // When unsaturated dIdPhi ≈ ω_LF, ratio → 0. When saturated it spikes → 1.
+        this._cachedSatDepth = dIdPhi > wlf
+          ? Math.max(0, Math.min(1, 1.0 - wlf / dIdPhi))
+          : 0;
 
         // F(Φ) = ω_LF * Φ * cosh²(K*Φ) * (1 + a*K*Φ) + (2/T)*Φ - C
         const F = wlf * phi * cosh2 * tilt + twoOverT * phi - C;
-
-        // F'(Φ) = ω_LF * [cosh²(K*Φ)*(1 + 2a*K*Φ) + K*Φ*sinh(2*K*Φ)*(1 + a*K*Φ)] + 2/T
-        // Guard: dF must be positive for Newton to descend. The linear term
-        // (2/T) always contributes positively. If the nonlinear terms go
-        // negative (possible with asymmetry + large negative Kphi), clamp
-        // dF to the linear minimum to prevent sign-flip divergence.
-        const dF = Math.max(
-          twoOverT,
-          wlf * (cosh2 * (1.0 + 2.0 * a * Kphi) +
-                 K * phi * sinh2Kphi * tilt) + twoOverT,
-        );
+        if (Math.abs(F) < 1e-10) break; // already converged — skip remaining iters
 
         phi -= F / dF;
       }
@@ -259,36 +266,14 @@ export class TransformerModel {
     this.flux = 0;
     this.vL = 0;
     this.eddyZ1 = 0;
+    this._cachedSatDepth = 0;
   }
 
   /**
    * Returns 0-1 indicating how deep the core is into saturation.
-   * Based on the instantaneous drop in differential permeability.
+   * Value is cached inside process() at zero extra cost (reuses Newton loop intermediates).
    */
   getSaturationDepth(): number {
-    if (this.satGain <= 0.001 && this.asymmetry === 0) return 0;
-
-    const K = this.K_eff;
-    // Clamp Kphi to ±200 to match Newton solver bounds
-    const Kphi = Math.max(-200, Math.min(200, K * this.flux));
-    const a = this.asymmetry;
-
-    // dI/dΦ using cosh² model:
-    // I(Φ)*R = ω_LF * Φ * cosh²(K*Φ) * (1 + a*K*Φ)
-    // dI/dΦ = ω_LF * [cosh²(K*Φ)*(1 + 2a*K*Φ) + K*Φ*sinh(2*K*Φ)*(1 + a*K*Φ)]
-    const e = Math.exp(Kphi);
-    const eInv = 1.0 / e;
-    const coshKphi = (e + eInv) * 0.5;
-    const cosh2 = coshKphi * coshKphi;
-    const sinh2Kphi = (e * e - eInv * eInv) * 0.5;
-    const tilt = 1.0 + a * Kphi;
-
-    const dI_dPhi = this.currentWlf * (cosh2 * (1.0 + 2.0 * a * Kphi) +
-                    K * this.flux * sinh2Kphi * tilt);
-
-    // When unsaturated, dI/dΦ ≈ ω_LF. When saturated, it spikes.
-    // Ratio maps [ω_LF ... ∞] to [0 ... 1]
-    const depth = 1.0 - this.currentWlf / dI_dPhi;
-    return clamp(depth, 0, 1);
+    return this._cachedSatDepth;
   }
 }

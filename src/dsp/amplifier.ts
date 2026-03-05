@@ -52,8 +52,13 @@ export function gridCurrentIg(Vgk: number): number {
 /**
  * Analytical Jacobian of [Ip, Ig] w.r.t. [Vpk, Vgk].
  * Returns flat array [dIp/dVpk, dIp/dVgk, dIg/dVpk, dIg/dVgk].
+ * If `out` is provided, values are written in-place to avoid allocations.
  */
-export function cohenHelieJacobian(Vpk: number, Vgk: number): number[] {
+export function cohenHelieJacobian(
+  Vpk: number,
+  Vgk: number,
+  out?: Float64Array | number[],
+): Float64Array | number[] {
   // dIk/d(arg) chain
   const argK = CH_Ck * (Vpk / CH_mu + Vgk);
   const spK = softplus(argK);
@@ -81,12 +86,12 @@ export function cohenHelieJacobian(Vpk: number, Vgk: number): number[] {
   const dIg_dVgk = 1.5 * 1.5e-3 * Math.sqrt(V_eff) * dVeff_dVgk;
 
   // Ip = Ik - Ig, so dIp/dVpk = dIk/dVpk, dIp/dVgk = dIk/dVgk - dIg/dVgk
-  return [
-    dIk_dVpk,              // dIp/dVpk (Ig independent of Vpk)
-    dIk_dVgk - dIg_dVgk,   // dIp/dVgk
-    0,                      // dIg/dVpk
-    dIg_dVgk,              // dIg/dVgk
-  ];
+  const J = out ?? [0, 0, 0, 0];
+  J[0] = dIk_dVpk;            // dIp/dVpk (Ig independent of Vpk)
+  J[1] = dIk_dVgk - dIg_dVgk; // dIp/dVgk
+  J[2] = 0;                   // dIg/dVpk
+  J[3] = dIg_dVgk;            // dIg/dVgk
+  return J;
 }
 
 // ---------------------------------------------------------------------------
@@ -119,6 +124,7 @@ export class AmplifierModel {
   private driveRaw: number;
   private circuitParams: TubeCircuitParams;
   private fs: number;
+  private maxNRIter: number;
 
   // Transistor mode state (dynamic bias from coupling capacitor charging)
   private txBiasState = 0;           // DC offset from coupling cap rectification
@@ -154,6 +160,13 @@ export class AmplifierModel {
   private sagDenomC1 = 1;
   private sagDenomC2 = 1;
 
+  // Base-rate sag: updateSag runs once per base-rate sample (every sagSkip OS samples).
+  // Sag models 60 Hz mains dynamics — running at OS rate (up to 384 kHz) adds no accuracy.
+  private sagSkip = 1;        // = oversampleFactor (derived from fs / 48000)
+  private sagT = 1 / 48000;   // effective sag integration time step (base-rate period)
+  private sagSampleCount = 0; // OS samples since last sag update
+  private sagIpAccum = 0;     // accumulated plate current for base-rate averaging
+
   // State-space matrices (precomputed from circuit topology + trapezoidal rule)
   // v_nl = Hd*x + Kd_vin*u + Kd_vpp*Vpp + Ld*i_nl
   private Hd = new Float64Array(8);      // 2x4 row-major
@@ -169,12 +182,14 @@ export class AmplifierModel {
   private Dd = new Float64Array(4);      // 1x4
   private Ed_vpp = 0;
   private Fd = new Float64Array(2);      // 1x2
+  private jacobian = new Float64Array(4); // scratch Jacobian buffer (no per-sample alloc)
 
   constructor(
     mode: 'tube' | 'transistor',
     drive = 1.0,
     circuitParams?: TubeCircuitParams,
     fs = 48000,
+    oversampleFactor = 1,
   ) {
     this.mode = mode;
     this.driveRaw = drive;
@@ -182,6 +197,16 @@ export class AmplifierModel {
     this.circuitParams = circuitParams ?? DEFAULT_CIRCUIT;
     this.fs = fs;
     this.txBiasAlpha = Math.exp(-1 / (fs * 0.05));
+
+    // At higher OS rates inter-sample changes are smaller, so NR converges faster
+    // from the previous sample's solution. Fewer iters × more frequent solves gives
+    // equal or better cumulative accuracy: 8x OS at 3 iters = 8x more solves than 1x.
+    this.maxNRIter = Math.max(2, Math.ceil(8 / Math.sqrt(oversampleFactor)));
+
+    // Sag runs once per base-rate sample, not once per OS sample.
+    // 60 Hz mains dynamics change negligibly within one base-rate period (20 µs).
+    this.sagSkip = Math.max(1, Math.round(fs / 48000));
+    this.sagT = this.sagSkip / fs;
 
     if (mode === 'tube') {
       this.initStateSpace();
@@ -420,10 +445,11 @@ export class AmplifierModel {
     this.Fd[0] = c_V2_Ip * rl_frac;
     this.Fd[1] = c_V2_Ig * rl_frac;
 
-    // Precompute Backward Euler denominators for sag integration
-    this.sagDenomC1 = 1 + T / (AmplifierModel.SAG_R_FILTER * AmplifierModel.SAG_C1);
-    this.sagDenomC2 = 1 + T / (AmplifierModel.SAG_R_FILTER * AmplifierModel.SAG_C2)
-                        + T / (AmplifierModel.SAG_R_BLEEDER * AmplifierModel.SAG_C2);
+    // Precompute Backward Euler denominators for sag integration.
+    // Use sagT (base-rate step) since updateSag runs once per base-rate sample.
+    this.sagDenomC1 = 1 + this.sagT / (AmplifierModel.SAG_R_FILTER * AmplifierModel.SAG_C1);
+    this.sagDenomC2 = 1 + this.sagT / (AmplifierModel.SAG_R_FILTER * AmplifierModel.SAG_C2)
+                        + this.sagT / (AmplifierModel.SAG_R_BLEEDER * AmplifierModel.SAG_C2);
   }
 
   // -------------------------------------------------------------------------
@@ -450,7 +476,7 @@ export class AmplifierModel {
         const residual = Ik - Ik_eval;
         if (Math.abs(residual) < 1e-9) break;
         // h'(Ik) = 1 + Rp * dIk/dVpk
-        const J = cohenHelieJacobian(Vpk, Vgk);
+        const J = cohenHelieJacobian(Vpk, Vgk, this.jacobian);
         const dh = 1 + Rp * J[0];
         if (Math.abs(dh) < 1e-15) break;
         Ik -= residual / dh;
@@ -480,6 +506,10 @@ export class AmplifierModel {
     this._sagVpp = Vpp;
     this.sagVscreen = Vpp;
     this.acPhase = 0;
+
+    // Reset base-rate sag accumulators
+    this.sagSampleCount = 0;
+    this.sagIpAccum = 0;
 
     // Warmup: run the discrete system to its own periodic steady state.
     // 3 real-time seconds ensures the slow SAG v2.0 filter caps fully settle
@@ -511,7 +541,7 @@ export class AmplifierModel {
     let Ip = this.i_nl_prev[0];
     let Ig = this.i_nl_prev[1];
 
-    for (let iter = 0; iter < 8; iter++) {
+    for (let iter = 0; iter < this.maxNRIter; iter++) {
       // Tube port voltages: v_nl = Hd*x + Kd_vin*u + Kd_vpp*Vpp + Ld*i_nl
       const Vpk = this.Hd[0] * x[0] + this.Hd[1] * x[1] + this.Hd[2] * x[2] + this.Hd[3] * x[3]
                 + this.Kd_vpp[0] * Vpp
@@ -533,7 +563,7 @@ export class AmplifierModel {
       if (Math.abs(r0) < 1e-9 && Math.abs(r1) < 1e-9) break;
 
       // Jacobian J = d[Ip,Ig]/d[Vpk,Vgk]
-      const J = cohenHelieJacobian(Vpk, Vgk);
+      const J = cohenHelieJacobian(Vpk, Vgk, this.jacobian);
 
       // Newton matrix: M = I - J * Ld  (2x2)
       const M00 = 1 - (J[0] * this.Ld[0] + J[1] * this.Ld[2]);
@@ -583,8 +613,14 @@ export class AmplifierModel {
     this.x[2] = x2_next;
     this.x[3] = x3_next;
 
-    // Update power supply sag via physical AC mains + rectifier model
-    this.updateSag(Ip + externalIp);
+    // Update power supply sag at base rate (60 Hz phenomenon — no benefit from OS rate).
+    // Accumulate plate current; fire once every sagSkip OS samples.
+    this.sagIpAccum += Ip + externalIp;
+    if (++this.sagSampleCount >= this.sagSkip) {
+      this.updateSag(this.sagIpAccum / this.sagSkip);
+      this.sagSampleCount = 0;
+      this.sagIpAccum = 0;
+    }
 
     // Normalize output: raw y is in volts, scale to ~[-1,1]
     return y / this.dcPlateVoltage;
@@ -595,7 +631,7 @@ export class AmplifierModel {
   // -------------------------------------------------------------------------
 
   private updateSag(Ip: number): void {
-    const T = 1 / this.fs;
+    const T = this.sagT;
     const Vpp = this._sagVpp;
     const Vss = this.sagVscreen;
     const Videal = this.circuitParams.Vpp;

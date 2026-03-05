@@ -58,7 +58,7 @@ export function Sparkline({
 
     // Tick labels (max at top, min at bottom)
     if (formatTick) {
-      ctx.font = '8px Inter, system-ui, sans-serif';
+      ctx.font = '8px IBM Plex Mono, monospace';
       ctx.fillStyle = '#555d6b';
       ctx.textAlign = 'right';
       ctx.textBaseline = 'top';

@@ -58,7 +58,8 @@ export class CrosstalkModel {
   }
 
   setAmount(amount: number) {
-    this.amount = amount;
+    // Allow aggressive creative values but keep bleed below unity for stability.
+    this.amount = Math.max(0, Math.min(0.5, amount));
   }
 
   process(blocks: Float32Array[]) {

@@ -41,6 +41,12 @@ export class WorkletBridge {
   }
 }
 
+export function getWorkletUrl(): string {
+  return import.meta.env.DEV
+    ? '/src/worklet/tape-processor.ts'
+    : '/worklets/tape-processor.js';
+}
+
 /**
  * Create the AudioContext, load the worklet module, and return a WorkletBridge.
  */
@@ -50,10 +56,7 @@ export async function createWorkletBridge(
   oversample = 2,
   tapeSpeed = 15,
 ): Promise<WorkletBridge> {
-  const workletUrl = import.meta.env.DEV
-    ? '/src/worklet/tape-processor.ts'
-    : '/worklets/tape-processor.js';
-  await audioCtx.audioWorklet.addModule(workletUrl);
+  await audioCtx.audioWorklet.addModule(getWorkletUrl());
 
   const node = new AudioWorkletNode(audioCtx, 'tape-processor', {
     numberOfInputs: 1,

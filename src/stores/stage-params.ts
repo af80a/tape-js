@@ -16,6 +16,7 @@ interface StageParamsState {
   setStageBypass: (stageId: StageId, bypassed: boolean) => void;
   setStageVariant: (stageId: StageId, variant: string) => void;
   setStageParam: (stageId: StageId, param: string, value: number) => void;
+  setAmpType: (ampType: 'tube' | 'transistor') => void;
   loadPreset: (presetName: string) => void;
 }
 
@@ -111,6 +112,20 @@ export const useStageParams = create<StageParamsState>((set) => ({
       stages: {
         ...state.stages,
         [stageId]: { ...state.stages[stageId], variant },
+      },
+    }));
+  },
+
+  setAmpType: (ampType) => {
+    useAudioEngine.getState().postMessage({
+      type: 'set-amp-type',
+      value: ampType,
+    });
+    set((state) => ({
+      stages: {
+        ...state.stages,
+        recordAmp: { ...state.stages.recordAmp, variant: ampType },
+        playbackAmp: { ...state.stages.playbackAmp, variant: ampType },
       },
     }));
   },

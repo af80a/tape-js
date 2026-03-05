@@ -241,7 +241,10 @@ export class Oversampler {
 
     // States are now circular buffers
     this.upsampleState = new Float64Array(this.tapsPerPhase);
-    this.downsampleState = new Float64Array(N);
+    // Double-buffer: size 2N lets convolution read state[idx + j] without inner-loop modulo.
+    // Mirror each written sample at state[idx] and state[idx + N] so the window
+    // [idx, idx+N) is always valid regardless of wrap position.
+    this.downsampleState = new Float64Array(N * 2);
     
     this.upsampleStateIdx = 0;
     this.downsampleStateIdx = 0;
@@ -299,20 +302,25 @@ export class Oversampler {
     const output = this.downsampleOutput;
     const kernel = this.downsampleKernel;
     const N = kernel.length;
-    const state = this.downsampleState;
+    const state = this.downsampleState; // size 2*N (double-buffer)
     let stateIdx = this.downsampleStateIdx;
 
     for (let i = 0; i < outLen; i++) {
-      // Insert 'factor' new high-rate samples into the circular buffer
+      // Insert 'factor' new high-rate samples into the double-buffer circular buffer.
+      // Each sample is written at stateIdx and again at stateIdx + N so the
+      // convolution window [stateIdx, stateIdx+N) is always contiguous — no modulo
+      // needed in the inner product loop below.
       for (let f = 0; f < factor; f++) {
-        stateIdx = (stateIdx - 1 + N) % N;
-        state[stateIdx] = input[i * factor + f];
+        if (--stateIdx < 0) stateIdx += N;
+        const v = input[i * factor + f];
+        state[stateIdx] = v;
+        state[stateIdx + N] = v;
       }
 
-      // Compute single FIR dot product for the kept sample
+      // FIR dot product — inner loop has no modulo (stateIdx + j always in [0, 2N))
       let sum = 0;
       for (let j = 0; j < N; j++) {
-        sum += state[(stateIdx + j) % N] * kernel[j];
+        sum += state[stateIdx + j] * kernel[j];
       }
       output[i] = sum;
     }

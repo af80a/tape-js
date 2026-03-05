@@ -12,6 +12,7 @@ export class AudioFileLoader {
   private ctx: AudioContext;
   private destination: AudioNode;
   private buffer: AudioBuffer | null = null;
+  private fileName: string | null = null;
   private source: AudioBufferSourceNode | null = null;
   private playing = false;
   private startOffset = 0;
@@ -32,7 +33,18 @@ export class AudioFileLoader {
   async loadFile(file: File): Promise<void> {
     const arrayBuffer = await file.arrayBuffer();
     this.buffer = await this.ctx.decodeAudioData(arrayBuffer);
+    this.fileName = file.name;
     this.stop();
+  }
+
+  /** Decoded audio buffer (read-only reference). */
+  getBuffer(): AudioBuffer | null {
+    return this.buffer;
+  }
+
+  /** Name of the currently loaded source file, if any. */
+  getLoadedFileName(): string | null {
+    return this.fileName;
   }
 
   // ---------------------------------------------------------------------------

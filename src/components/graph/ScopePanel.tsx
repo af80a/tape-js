@@ -16,7 +16,7 @@ const LEVEL_PRESETS = [72, 36, 18, 9].map((span) => {
 
 const GAIN_PRESETS = [48, 24, 12, 6, 3].map((span) => {
   const center = 0;
-  return { min: center - span / 2, max: center + span / 2, label: `±${span / 2} dB` };
+  return { min: center - span / 2, max: center + span / 2, label: `\u00B1${span / 2} dB` };
 });
 
 // Saturation baseline is always 0 — zoom shrinks the ceiling, not the center.
@@ -27,15 +27,15 @@ const SAT_PRESETS = [1.0, 0.75, 0.5, 0.25].map((max) => ({
 }));
 
 const LEVEL_COLOR = (v: number) => {
-  if (v > 3) return '#ff4444';
-  if (v > 0) return '#ffcc00';
-  return '#44cc44';
+  if (v > 3) return '#c44a44';
+  if (v > 0) return '#c8a84a';
+  return '#4a9a68';
 };
 
 const SATURATION_COLOR = (v: number) => {
-  if (v > 0.7) return '#ff4444';
-  if (v > 0.3) return '#ffcc00';
-  return '#5f8f8a';
+  if (v > 0.7) return '#c44a44';
+  if (v > 0.3) return '#c49a6c';
+  return '#4a8a80';
 };
 
 const fmtDb = (v: number) => `${v > 0 ? '+' : ''}${v}`;
@@ -60,7 +60,7 @@ function ScaleHeader({ label, presets, index, onZoomIn, onZoomOut }: ScaleHeader
           disabled={index === 0}
           aria-label="Zoom out"
         >
-          –
+          &ndash;
         </button>
         <span className="scope-panel__scale-label">{presets[index].label}</span>
         <button
@@ -140,18 +140,20 @@ export function ScopePanel() {
           onZoomOut={() => setSatIdx((i) => Math.max(i - 1, 0))}
         />
       </div>
-      {SCOPE_STAGE_IDS.map((id) => (
-        <ScopeRow
-          key={id}
-          stageId={id}
-          levelMin={levelRange.min}
-          levelMax={levelRange.max}
-          gainMin={gainRange.min}
-          gainMax={gainRange.max}
-          satMin={satRange.min}
-          satMax={satRange.max}
-        />
-      ))}
+      <div className="scope-panel__body">
+        {SCOPE_STAGE_IDS.map((id) => (
+          <ScopeRow
+            key={id}
+            stageId={id}
+            levelMin={levelRange.min}
+            levelMax={levelRange.max}
+            gainMin={gainRange.min}
+            gainMax={gainRange.max}
+            satMin={satRange.min}
+            satMax={satRange.max}
+          />
+        ))}
+      </div>
     </div>
   );
 }
