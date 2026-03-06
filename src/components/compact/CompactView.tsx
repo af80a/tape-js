@@ -81,6 +81,10 @@ function fmtAlign(v: number): string {
   return `${Math.round(v * 100)}%`;
 }
 
+function fmtArcmin(v: number): string {
+  return `${v.toFixed(2)}'`;
+}
+
 function fmtRef(v: number): string {
   return `${v.toFixed(0)} dB`;
 }
@@ -137,6 +141,7 @@ export function CompactView({ onPresetChange }: CompactViewProps) {
   const inputIron = stages.inputXfmr.params.satAmount ?? 1.0;
   const outputIron = stages.outputXfmr.params.satAmount ?? 1.0;
   const alignment = azimuthToAlignment(stages.head.params.azimuth ?? 1.0);
+  const weave = stages.head.params.weave ?? 0.2;
   const bleed = stages.head.params.crosstalk ?? 0.006;
   const wear = stages.head.params.dropouts ?? 0.0;
   const biasLevel = stages.bias.params.level ?? 0.5;
@@ -332,11 +337,16 @@ export function CompactView({ onPresetChange }: CompactViewProps) {
       {/* Section 3: Output */}
       <section className="compact-section">
         <h3 className="compact-section__label">Texture</h3>
-        <div className="controls-row compact-controls-row compact-controls-row--5col">
+        <div className="controls-row compact-controls-row compact-controls-row--6col">
           <Knob
             label="ALIGN" min={0} max={1} value={alignment}
             formatValue={fmtAlign}
             onChange={handleAlignmentChange}
+          />
+          <Knob
+            label="WEAVE" min={0} max={5} value={weave} step={0.01}
+            formatValue={fmtArcmin}
+            onChange={(v) => { setStageParam('head', 'weave', v); }}
           />
           <Knob
             label="BLEED" min={0} max={0.25} value={bleed} step={0.001}

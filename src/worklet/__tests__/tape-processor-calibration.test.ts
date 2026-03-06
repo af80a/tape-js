@@ -60,6 +60,7 @@ async function createCalibratedProcessor(preset: PresetName, tapeSpeed: 30 | 15 
 
   send(processor, { type: 'set-stage-param', stageId: 'head', param: 'dropouts', value: 0 });
   send(processor, { type: 'set-stage-param', stageId: 'head', param: 'azimuth', value: 0 });
+  send(processor, { type: 'set-stage-param', stageId: 'head', param: 'weave', value: 0 });
   send(processor, { type: 'set-stage-param', stageId: 'head', param: 'crosstalk', value: 0 });
 
   return processor;

@@ -561,6 +561,7 @@ class TapeProcessor extends AudioWorkletProcessor {
     else if (param === 'dropouts') dsp.head.setDropoutIntensity(value);
     else if (param === 'crosstalk') this.crosstalk.setAmount(value);
     else if (param === 'azimuth') dsp.azimuth.setAzimuth(value);
+    else if (param === 'weave') dsp.azimuth.setWeave(value);
   }
 
   private applyTransportParam(dsp: ChannelDSP, param: string, value: number): void {
@@ -643,8 +644,15 @@ class TapeProcessor extends AudioWorkletProcessor {
       spacing: preset.headSpacing,
       bumpGainDb: preset.bumpGainDb,
     }, channel);
-    const azimuth = new AzimuthModel(fs, channel, this.tapeSpeed, preset.trackSpacing);
+    const azimuth = new AzimuthModel(
+      fs,
+      channel,
+      this.tapeSpeed,
+      preset.trackSpacing,
+      preset.trackWidth,
+    );
     azimuth.setAzimuth(preset.azimuthDefault);
+    azimuth.setWeave(preset.azimuthWeaveDefault);
 
     const playbackOversampler = new Oversampler(osFactor, this.renderBlockSize);
     const playbackAmp = this.buildAmplifier(preset.ampType, preset.playbackAmpDrive);

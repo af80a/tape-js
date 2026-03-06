@@ -62,6 +62,7 @@ async function createAnalysisProcessorWithMode(mode: 'delayed' | 'predictor'): P
 
   send(processor, { type: 'set-stage-param', stageId: 'head', param: 'dropouts', value: 0 });
   send(processor, { type: 'set-stage-param', stageId: 'head', param: 'azimuth', value: 0 });
+  send(processor, { type: 'set-stage-param', stageId: 'head', param: 'weave', value: 0 });
   send(processor, { type: 'set-stage-param', stageId: 'head', param: 'crosstalk', value: 0 });
 
   return processor;
@@ -389,9 +390,11 @@ describe('TapeProcessor characterization harness', () => {
 
     send(lowCouplingProcessor, { type: 'set-stage-param', stageId: 'head', param: 'dropouts', value: 0 });
     send(lowCouplingProcessor, { type: 'set-stage-param', stageId: 'head', param: 'azimuth', value: 0 });
+    send(lowCouplingProcessor, { type: 'set-stage-param', stageId: 'head', param: 'weave', value: 0 });
     send(lowCouplingProcessor, { type: 'set-stage-param', stageId: 'head', param: 'crosstalk', value: 0 });
     send(highCouplingProcessor, { type: 'set-stage-param', stageId: 'head', param: 'dropouts', value: 0 });
     send(highCouplingProcessor, { type: 'set-stage-param', stageId: 'head', param: 'azimuth', value: 0 });
+    send(highCouplingProcessor, { type: 'set-stage-param', stageId: 'head', param: 'weave', value: 0 });
     send(highCouplingProcessor, { type: 'set-stage-param', stageId: 'head', param: 'crosstalk', value: 0 });
 
     const burstLength = 16_384;
@@ -474,10 +477,12 @@ describe('TapeProcessor characterization harness', () => {
     }, FS);
 
     send(cleanProcessor, { type: 'set-stage-param', stageId: 'head', param: 'azimuth', value: 0 });
+    send(cleanProcessor, { type: 'set-stage-param', stageId: 'head', param: 'weave', value: 0 });
     send(cleanProcessor, { type: 'set-stage-param', stageId: 'head', param: 'crosstalk', value: 0 });
     send(cleanProcessor, { type: 'set-stage-param', stageId: 'head', param: 'dropouts', value: 0 });
 
     send(dirtyProcessor, { type: 'set-stage-param', stageId: 'head', param: 'azimuth', value: 0 });
+    send(dirtyProcessor, { type: 'set-stage-param', stageId: 'head', param: 'weave', value: 0 });
     send(dirtyProcessor, { type: 'set-stage-param', stageId: 'head', param: 'crosstalk', value: 0 });
     send(dirtyProcessor, { type: 'set-stage-param', stageId: 'head', param: 'dropouts', value: 1 });
 

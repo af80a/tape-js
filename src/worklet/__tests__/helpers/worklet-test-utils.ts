@@ -139,3 +139,37 @@ export function renderMono(
 
   return output;
 }
+
+export function renderStereo(
+  processor: TestProcessor,
+  inputLeft: Float32Array,
+  inputRight: Float32Array,
+  options: RenderOptions = {},
+): [Float32Array, Float32Array] {
+  if (inputLeft.length !== inputRight.length) {
+    throw new Error('Stereo render requires matching channel lengths');
+  }
+
+  const blockSize = options.blockSize ?? 128;
+  const parameters = createKRateParameters(options.params);
+  const outputLeft = new Float32Array(inputLeft.length);
+  const outputRight = new Float32Array(inputRight.length);
+
+  for (let offset = 0, blockIndex = 0; offset < inputLeft.length; offset += blockSize, blockIndex++) {
+    const remaining = Math.min(blockSize, inputLeft.length - offset);
+    const leftBlock = new Float32Array(blockSize);
+    const rightBlock = new Float32Array(blockSize);
+    leftBlock.set(inputLeft.subarray(offset, offset + remaining));
+    rightBlock.set(inputRight.subarray(offset, offset + remaining));
+
+    const outputLeftBlock = new Float32Array(blockSize);
+    const outputRightBlock = new Float32Array(blockSize);
+    processor.process([[leftBlock, rightBlock]], [[outputLeftBlock, outputRightBlock]], parameters);
+    outputLeft.set(outputLeftBlock.subarray(0, remaining), offset);
+    outputRight.set(outputRightBlock.subarray(0, remaining), offset);
+
+    options.probe?.(processor, { blockIndex, offset, outputBlock: outputLeftBlock });
+  }
+
+  return [outputLeft, outputRight];
+}

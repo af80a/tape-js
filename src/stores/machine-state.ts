@@ -142,6 +142,8 @@ export function buildStageStates(preset: MachinePreset): StageStateMap {
   stages.hysteresis.params.c = formula.c;
 
   stages.head.params.bumpGainDb = preset.bumpGainDb;
+  stages.head.params.azimuth = preset.azimuthDefault;
+  stages.head.params.weave = preset.azimuthWeaveDefault;
 
   stages.transport.params.wow = preset.wowDefault;
   stages.transport.params.flutter = preset.flutterDefault;

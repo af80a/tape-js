@@ -1,11 +1,49 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { loadProcessorCtor, send, type TestProcessor } from './helpers/worklet-test-utils';
+import { generateTwoTone } from './helpers/signals';
+import { createProcessor, loadProcessorCtor, renderStereo, send, type TestProcessor } from './helpers/worklet-test-utils';
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
 describe('TapeProcessor state replay', () => {
+  it('keeps dual-mono output sample-identical when decorrelation is disabled', async () => {
+    const processor = await createProcessor({
+      preset: 'ampex',
+      oversample: 4,
+      tapeSpeed: 15,
+    });
+
+    send(processor, { type: 'set-stage-param', stageId: 'head', param: 'dropouts', value: 0 });
+    send(processor, { type: 'set-stage-param', stageId: 'head', param: 'azimuth', value: 0 });
+    send(processor, { type: 'set-stage-param', stageId: 'head', param: 'weave', value: 0 });
+    send(processor, { type: 'set-stage-param', stageId: 'head', param: 'crosstalk', value: 0 });
+
+    const input = generateTwoTone(8_192, 48_000, [
+      { frequency: 83, amplitude: 0.42 },
+      { frequency: 1_700, amplitude: 0.18 },
+      { frequency: 6_300, amplitude: 0.08 },
+    ]);
+
+    const [left, right] = renderStereo(processor, input, input, {
+      params: {
+        inputGain: 1.15,
+        bias: 0.75,
+        drive: 0.55,
+        saturation: 0.6,
+        ampDrive: 0.45,
+        wow: 0,
+        flutter: 0,
+        hiss: 0,
+        color: 0,
+        headroom: 18,
+        outputGain: 1,
+      },
+    });
+
+    expect(Array.from(left)).toEqual(Array.from(right));
+  });
+
   it('preserves stage variants and overrides across oversample reinit', async () => {
     const TapeProcessor = await loadProcessorCtor();
     const processor = new TapeProcessor({

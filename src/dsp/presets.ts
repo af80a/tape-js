@@ -29,8 +29,12 @@ export interface MachinePreset {
   headSpacing: number;
   /** Center-to-center track spacing in meters (for azimuth delay computation). */
   trackSpacing: number;
+  /** Physical track width in meters (for azimuth sinc rolloff). */
+  trackWidth: number;
   /** Default azimuth error in arcminutes (0 = perfect alignment). */
   azimuthDefault: number;
+  /** Default tape-weave excursion in arcminutes. */
+  azimuthWeaveDefault: number;
   wowDefault: number;
   flutterDefault: number;
   hissDefault: number;
@@ -65,7 +69,9 @@ export const PRESETS: Record<string, MachinePreset> = {
     headGapWidth: 1.5e-6,  // narrow gap, extended HF
     headSpacing: 0.5e-6,   // well-maintained, tight contact
     trackSpacing: 4.22e-3, // 1/4" 2-track NAB: 82 mil track + 84 mil guard = 166 mil c-c
+    trackWidth: 2.08e-3,   // 82 mil playback track width
     azimuthDefault: 1.0,   // well-calibrated Swiss precision
+    azimuthWeaveDefault: 0.15,
     wowDefault: 0.1,
     flutterDefault: 0.08,
     hissDefault: 0.03,
@@ -92,7 +98,9 @@ export const PRESETS: Record<string, MachinePreset> = {
     headGapWidth: 2.0e-6,  // standard mastering head
     headSpacing: 0.8e-6,   // warm vintage character
     trackSpacing: 6.86e-3, // 1/2" 2-track: 210 mil track + 60 mil guard = 270 mil c-c
+    trackWidth: 5.33e-3,   // 210 mil playback track width
     azimuthDefault: 1.5,   // wider format, more sensitive to alignment
+    azimuthWeaveDefault: 0.25,
     wowDefault: 0.12,
     flutterDefault: 0.06,
     hissDefault: 0.04,
@@ -115,7 +123,9 @@ export const PRESETS: Record<string, MachinePreset> = {
     headGapWidth: 4.0e-6,  // wider gap, 24-track narrow tracks
     headSpacing: 1.2e-6,   // multitrack, more wear
     trackSpacing: 2.13e-3, // 2" 24-track: 43 mil track + 41 mil guard = 84 mil c-c
+    trackWidth: 1.09e-3,   // 43 mil playback track width
     azimuthDefault: 2.0,   // 24-track head, harder to align precisely
+    azimuthWeaveDefault: 0.45,
     wowDefault: 0.12,
     flutterDefault: 0.08,
     hissDefault: 0.05,

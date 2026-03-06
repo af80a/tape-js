@@ -106,6 +106,7 @@ export const STAGE_DEFS: Record<StageId, StageDef> = {
       dropouts: { label: 'Dropouts', min: 0, max: 1, default: 0.0, step: 0.01, formatValue: fmtPct },
       crosstalk: { label: 'Crosstalk', min: 0, max: 0.25, default: 0.006, step: 0.001, formatValue: fmtPct },
       azimuth: { label: 'Azimuth', min: 0, max: 30, default: 1.0, step: 0.1, formatValue: (v: number) => `${v.toFixed(1)}'` },
+      weave: { label: 'Weave', min: 0, max: 5, default: 0.2, step: 0.01, formatValue: (v: number) => `${v.toFixed(2)}'` },
       _trim: TRIM_PARAM,
     },
   },
