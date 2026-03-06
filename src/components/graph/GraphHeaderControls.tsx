@@ -26,7 +26,7 @@ export function GraphHeaderControls() {
   const setInputAlignMode = useAudioEngine((s) => s.setInputAlignMode);
   const scopeOpen = useAudioEngine((s) => s.scopeOpen);
   const toggleScope = useAudioEngine((s) => s.toggleScope);
-  const preset = useStageParams((s) => s.currentPreset);
+  const preset = useAudioEngine((s) => s.machinePreset);
   const loadPreset = useStageParams((s) => s.loadPreset);
   const headroom = useAudioEngine((s) => s.headroom);
   const setHeadroom = useAudioEngine((s) => s.setHeadroom);

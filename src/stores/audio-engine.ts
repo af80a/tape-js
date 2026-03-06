@@ -9,8 +9,20 @@ import { WorkletBridge, createWorkletBridge, getWorkletUrl } from '../audio/work
 import { STAGE_IDS, type StageId } from '../types/stages';
 import type { WorkletMessage, WorkletResponse } from '../types/messages';
 import { audioBufferToWav, buildProcessedFileName } from '../audio/wav-export';
-import { PRESETS, type MachinePreset } from '../dsp/presets';
 import { useStageParams } from './stage-params';
+import {
+  DEFAULT_MACHINE_PRESET,
+  PRESET_PARAM_KEYS,
+  buildPresetActiveStageParams,
+  buildPresetParamValues,
+  initActiveStageParams,
+  isPresetParamKey,
+  resolveMachinePreset,
+  resolveMachinePresetName,
+  type ActiveStageParamMap,
+  type PresetParamKey,
+  type StageStateMap,
+} from './machine-state';
 
 export interface StageMeterLevels {
   vuDb: number[];
@@ -33,13 +45,6 @@ const MAX_COUPLING_AMOUNT = 3.0;
 
 export const SCOPE_BUFFER_SIZE = 100; // ~5 seconds at 50ms meter interval
 
-const PARAM_KEYS = ['inputGain', 'bias', 'drive', 'saturation', 'ampDrive', 'wow', 'flutter', 'hiss', 'color', 'outputGain'] as const;
-type ParamKey = (typeof PARAM_KEYS)[number];
-
-function isParamKey(name: string): name is ParamKey {
-  return (PARAM_KEYS as readonly string[]).includes(name);
-}
-
 function initStageMeterState(): Record<string, StageMeterLevels> {
   const meters: Record<string, StageMeterLevels> = {};
   for (const id of STAGE_IDS) {
@@ -48,53 +53,9 @@ function initStageMeterState(): Record<string, StageMeterLevels> {
   return meters;
 }
 
-interface StageSnapshot {
-  bypassed: boolean;
-  variant?: string;
-  params: Record<string, number>;
-}
-
-type StageSnapshotMap = Record<StageId, StageSnapshot>;
-type ActiveStageParamMap = Record<StageId, Record<string, true>>;
-
 interface WorkletSyncTarget {
   postMessage: (msg: WorkletMessage) => void;
   setParam: (name: string, value: number, time: number) => void;
-}
-
-function initActiveStageParams(): ActiveStageParamMap {
-  const active = {} as ActiveStageParamMap;
-  for (const id of STAGE_IDS) {
-    active[id] = {};
-  }
-  return active;
-}
-
-function resolvePreset(presetName: string): MachinePreset {
-  return PRESETS[presetName] ?? PRESETS['studer'];
-}
-
-function buildParamValuesFromPreset(preset: MachinePreset): Record<ParamKey, number> {
-  return {
-    inputGain: 1.0,
-    bias: preset.biasDefault,
-    drive: preset.drive,
-    saturation: preset.saturation,
-    ampDrive: preset.recordAmpDrive,
-    wow: preset.wowDefault,
-    flutter: preset.flutterDefault,
-    hiss: preset.hissDefault,
-    color: 0,
-    outputGain: 1.0,
-  };
-}
-
-function buildPresetStageParams(): ActiveStageParamMap {
-  const active = initActiveStageParams();
-  // Playback amp has its own preset drive and cannot be reconstructed
-  // exactly from the single global `ampDrive` AudioParam.
-  active.playbackAmp.drive = true;
-  return active;
 }
 
 function normalizeInputAlignMode(value: string): InputAlignMode {
@@ -135,7 +96,7 @@ interface AudioEngineState {
   scopeOpen: boolean;
   offlineProcessing: boolean;
   offlineProgress: number;
-  paramValues: Record<ParamKey, number>;
+  paramValues: Record<PresetParamKey, number>;
   activeStageParams: ActiveStageParamMap;
 
   // Actions
@@ -146,7 +107,7 @@ interface AudioEngineState {
   pause: () => void;
   stop: () => void;
   seek: (time: number) => void;
-  setMachinePreset: (preset: string, stages?: StageSnapshotMap) => void;
+  setMachinePreset: (preset: string, stages?: StageStateMap) => void;
   setTapeSpeed: (speed: number) => void;
   setOversample: (factor: number) => void;
   setCouplingAmount: (amount: number) => void;
@@ -163,7 +124,7 @@ interface AudioEngineState {
   updateTime: (current: number, duration: number) => void;
 }
 
-const DEFAULT_PRESET = resolvePreset('studer');
+const DEFAULT_PRESET = resolveMachinePreset(DEFAULT_MACHINE_PRESET);
 
 function applyStateToWorklet(
   target: WorkletSyncTarget,
@@ -171,7 +132,7 @@ function applyStateToWorklet(
     AudioEngineState,
     'machinePreset' | 'tapeSpeed' | 'couplingAmount' | 'recordCouplingMode' | 'formula' | 'globalBypassed' | 'headroom' | 'paramValues' | 'activeStageParams'
   >,
-  stages: StageSnapshotMap,
+  stages: StageStateMap,
   oversample: number,
   time = 0,
 ): void {
@@ -183,7 +144,7 @@ function applyStateToWorklet(
   target.postMessage({ type: 'set-formula', value: state.formula });
   target.postMessage({ type: 'set-bypass', value: state.globalBypassed });
 
-  for (const key of PARAM_KEYS) {
+  for (const key of PRESET_PARAM_KEYS) {
     target.setParam(key, state.paramValues[key], time);
   }
   target.setParam('headroom', state.headroom, time);
@@ -228,8 +189,8 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
   scopeOpen: false,
   offlineProcessing: false,
   offlineProgress: 0,
-  paramValues: buildParamValuesFromPreset(DEFAULT_PRESET),
-  activeStageParams: buildPresetStageParams(),
+  paramValues: buildPresetParamValues(DEFAULT_PRESET),
+  activeStageParams: buildPresetActiveStageParams(),
 
   toggleScope: () => set((s) => ({ scopeOpen: !s.scopeOpen })),
 
@@ -299,13 +260,13 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
     set({ currentTime: time });
   },
 
-  setMachinePreset: (preset: string, stages?: StageSnapshotMap) => {
+  setMachinePreset: (preset: string, stages?: StageStateMap) => {
     // When changing machines, reset the character controls to match the machine's defaults
     // so the user gets the true machine experience out of the box.
-    const resolvedPreset = resolvePreset(preset);
-    const resolvedPresetName = PRESETS[preset] ? preset : 'studer';
-    const paramValues = buildParamValuesFromPreset(resolvedPreset);
-    const activeStageParams = buildPresetStageParams();
+    const resolvedPreset = resolveMachinePreset(preset);
+    const resolvedPresetName = resolveMachinePresetName(preset);
+    const paramValues = buildPresetParamValues(resolvedPreset);
+    const activeStageParams = buildPresetActiveStageParams();
     const nextState = get();
     const nextStages = stages ?? useStageParams.getState().stages;
     paramValues.inputGain = nextState.paramValues.inputGain;
@@ -391,7 +352,7 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
   setParam: (name: string, value: number) => {
     const { bridge, audioCtx } = get();
     bridge?.setParam(name, value, audioCtx?.currentTime ?? 0);
-    if (isParamKey(name)) {
+    if (isPresetParamKey(name)) {
       set((state) => ({
         paramValues: {
           ...state.paramValues,

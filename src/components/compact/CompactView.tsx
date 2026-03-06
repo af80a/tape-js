@@ -117,6 +117,7 @@ export function CompactView({ onPresetChange }: CompactViewProps) {
   const recordCouplingMode = useAudioEngine((s) => s.recordCouplingMode);
   const inputAlignMode = useAudioEngine((s) => s.inputAlignMode);
   const formula = useAudioEngine((s) => s.formula);
+  const preset = useAudioEngine((s) => s.machinePreset);
   const stages = useStageParams((s) => s.stages);
   const setGlobalBypass = useAudioEngine((s) => s.setGlobalBypass);
   const setHeadroom = useAudioEngine((s) => s.setHeadroom);
@@ -128,7 +129,6 @@ export function CompactView({ onPresetChange }: CompactViewProps) {
   const setFormula = useAudioEngine((s) => s.setFormula);
   const setAmpType = useStageParams((s) => s.setAmpType);
   const headroom = useAudioEngine((s) => s.headroom);
-  const preset = useStageParams((s) => s.currentPreset);
   const setStageParam = useStageParams((s) => s.setStageParam);
   const inputGain = stages.inputXfmr.params.inputGain ?? 1.0;
   const outputPushGain = stages.outputXfmr.params.inputGain ?? 1.0;
