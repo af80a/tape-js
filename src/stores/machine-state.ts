@@ -126,8 +126,8 @@ export function buildStageStates(preset: MachinePreset): StageStateMap {
 
   stages.recordAmp.variant = preset.ampType;
   stages.recordAmp.params.drive = preset.recordAmpDrive;
-  if (preset.tubeCircuit) {
-    stages.recordAmp.params.Vpp = preset.tubeCircuit.Vpp;
+  if (preset.recordAmpConfig?.tubeCircuit) {
+    stages.recordAmp.params.Vpp = preset.recordAmpConfig.tubeCircuit.Vpp;
   }
 
   stages.recordEQ.variant = preset.eqStandard;
@@ -150,8 +150,8 @@ export function buildStageStates(preset: MachinePreset): StageStateMap {
 
   stages.playbackAmp.variant = preset.ampType;
   stages.playbackAmp.params.drive = preset.playbackAmpDrive;
-  if (preset.tubeCircuit) {
-    stages.playbackAmp.params.Vpp = preset.tubeCircuit.Vpp;
+  if (preset.playbackAmpConfig?.tubeCircuit) {
+    stages.playbackAmp.params.Vpp = preset.playbackAmpConfig.tubeCircuit.Vpp;
   }
 
   stages.outputXfmr.params.satAmount = preset.outputTransformer.satAmount;

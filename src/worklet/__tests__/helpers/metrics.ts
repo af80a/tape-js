@@ -38,6 +38,11 @@ export function db(value: number): number {
   return 20 * Math.log10(Math.max(value, 1e-12));
 }
 
+export interface ToneAnalysis {
+  magnitude: number;
+  phase: number;
+}
+
 export function crestFactorDb(signal: Float32Array, start = 0, end = signal.length): number {
   return db(peakAbs(signal, start, end) / Math.max(rms(signal, start, end), 1e-12));
 }
@@ -49,6 +54,16 @@ export function goertzelMagnitude(
   start = 0,
   end = signal.length,
 ): number {
+  return goertzelAnalysis(signal, sampleRate, frequency, start, end).magnitude;
+}
+
+export function goertzelAnalysis(
+  signal: Float32Array,
+  sampleRate: number,
+  frequency: number,
+  start = 0,
+  end = signal.length,
+): ToneAnalysis {
   const [from, to] = clampWindow(signal.length, start, end);
   const w = (2 * Math.PI * frequency) / sampleRate;
   const coeff = 2 * Math.cos(w);
@@ -63,7 +78,12 @@ export function goertzelMagnitude(
 
   const power = s1 * s1 + s2 * s2 - coeff * s1 * s2;
   const count = Math.max(1, to - from);
-  return Math.sqrt(Math.max(0, power)) / count;
+  const real = s1 - s2 * Math.cos(w);
+  const imag = s2 * Math.sin(w);
+  return {
+    magnitude: Math.sqrt(Math.max(0, power)) / count,
+    phase: Math.atan2(imag, real),
+  };
 }
 
 export function matchRmsGain(
@@ -98,6 +118,13 @@ export interface HarmonicProfile {
   thd: number;
 }
 
+export interface IntermodulationProfile {
+  carrier: number;
+  lowerSideband: number;
+  upperSideband: number;
+  imd: number;
+}
+
 export function harmonicProfile(
   signal: Float32Array,
   sampleRate: number,
@@ -120,5 +147,26 @@ export function harmonicProfile(
     fundamental,
     harmonics,
     thd,
+  };
+}
+
+export function intermodulationProfile(
+  signal: Float32Array,
+  sampleRate: number,
+  carrierHz: number,
+  modHz: number,
+  start = 0,
+  end = signal.length,
+): IntermodulationProfile {
+  const carrier = goertzelMagnitude(signal, sampleRate, carrierHz, start, end);
+  const lowerSideband = goertzelMagnitude(signal, sampleRate, carrierHz - modHz, start, end);
+  const upperSideband = goertzelMagnitude(signal, sampleRate, carrierHz + modHz, start, end);
+  const imd = (lowerSideband + upperSideband) / Math.max(carrier, 1e-12);
+
+  return {
+    carrier,
+    lowerSideband,
+    upperSideband,
+    imd,
   };
 }

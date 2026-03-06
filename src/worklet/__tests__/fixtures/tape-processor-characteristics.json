@@ -1,55 +1,143 @@
 {
   "version": 1,
-  "generatedAt": "2026-03-06T11:53:07.894Z",
+  "generatedAt": "2026-03-06T17:04:46.630Z",
   "sampleRate": 48000,
   "scenarios": {
     "alignment1k": {
       "studer": {
-        "gainDb": 0.008523,
-        "thdDb": -13.897822,
-        "rmsDb": -17.815921,
-        "residualDb": -30.712093
+        "gainDb": 0.299863,
+        "thdDb": -12.223947,
+        "rmsDb": -17.439516,
+        "residualDb": -29.335204
       },
       "ampex": {
-        "gainDb": -0.015269,
-        "thdDb": -18.742314,
-        "rmsDb": -17.955965,
-        "residualDb": -32.815093
+        "gainDb": -0.420588,
+        "thdDb": -16.85284,
+        "rmsDb": -18.329553,
+        "residualDb": -31.601611
       },
       "mci": {
-        "gainDb": -0.002544,
-        "thdDb": -28.09803,
-        "rmsDb": -17.995816,
-        "residualDb": -40.350546
+        "gainDb": -0.010255,
+        "thdDb": -30.475202,
+        "rmsDb": -18.006361,
+        "residualDb": -40.865439
       }
     },
     "overload1kAmpex": {
       "nominal": {
-        "gainDb": -0.015269,
-        "thdDb": -18.742314,
-        "rmsDb": -17.955965,
-        "residualDb": -32.815093
+        "gainDb": -0.420588,
+        "thdDb": -16.85284,
+        "rmsDb": -18.329553,
+        "residualDb": -31.601611
       },
       "hot": {
-        "gainDb": -4.918492,
-        "thdDb": -11.63104,
-        "rmsDb": -16.624195,
-        "residualDb": -20.040966
+        "gainDb": -5.779398,
+        "thdDb": -9.576625,
+        "rmsDb": -17.321123,
+        "residualDb": -19.031692
       }
     },
     "highFrequency16kAmpex": {
-      "ips15GainDb": -24.027293,
-      "ips30GainDb": -23.12936,
-      "deltaDb": 0.897932
+      "ips15GainDb": -8.626752,
+      "ips30GainDb": -5.854682,
+      "deltaDb": 2.77207
     },
     "twoToneImdAmpex": {
-      "lowImdDb": -17.535809,
-      "highImdDb": -3.831288,
-      "nullResidualDb": -25.070696
+      "lowImdDb": -24.22148,
+      "highImdDb": 2.173719,
+      "nullResidualDb": -22.823964
     },
     "predictorBurstAmpex": {
-      "recoveryRatio": 1.032026,
-      "transientResidualDb": -23.309349
+      "recoveryRatio": 45.848293,
+      "transientResidualDb": -21.983034
+    },
+    "headCrosstalkCurveAmpex": {
+      "bleed100HzDb": -32.887406,
+      "bleed1000HzDb": -44.391044,
+      "bleed3000HzDb": -48.238282,
+      "bleed10000HzDb": -45.233791
+    },
+    "headAzimuthPhaseAmpex": {
+      "phase500Rad": -0.049365,
+      "phase2000Rad": -0.197638,
+      "phase8000Rad": -0.799116
+    },
+    "headAzimuthLossAmpex": {
+      "loss1000Db": -0.214242,
+      "loss8000Db": -31.513717,
+      "loss16000Db": -32.007743
+    },
+    "thdLevelSweepAmpex": {
+      "recordDominant": {
+        "hz100": {
+          "minus24DbfsThdDb": -8.590847,
+          "minus18DbfsThdDb": -6.231704,
+          "minus12DbfsThdDb": -4.324112
+        },
+        "hz1000": {
+          "minus24DbfsThdDb": -11.038793,
+          "minus18DbfsThdDb": -8.070331,
+          "minus12DbfsThdDb": -6.698476
+        },
+        "hz10000": {
+          "minus24DbfsThdDb": -17.465511,
+          "minus18DbfsThdDb": -13.931815,
+          "minus12DbfsThdDb": -12.099255
+        }
+      },
+      "playbackDominant": {
+        "hz100": {
+          "minus24DbfsThdDb": -15.299999,
+          "minus18DbfsThdDb": -11.794272,
+          "minus12DbfsThdDb": -8.113807
+        },
+        "hz1000": {
+          "minus24DbfsThdDb": -16.212964,
+          "minus18DbfsThdDb": -13.302005,
+          "minus12DbfsThdDb": -8.893048
+        },
+        "hz10000": {
+          "minus24DbfsThdDb": -23.297154,
+          "minus18DbfsThdDb": -21.519144,
+          "minus12DbfsThdDb": -14.254908
+        }
+      }
+    },
+    "imdLevelSweepAmpex": {
+      "recordDominant": {
+        "hz100": {
+          "minus24DbfsImdDb": -15.24302,
+          "minus18DbfsImdDb": -17.326584,
+          "minus12DbfsImdDb": -8.532939
+        },
+        "hz1000": {
+          "minus24DbfsImdDb": -3.546508,
+          "minus18DbfsImdDb": -0.908599,
+          "minus12DbfsImdDb": -1.827363
+        },
+        "hz10000": {
+          "minus24DbfsImdDb": -1.608616,
+          "minus18DbfsImdDb": -3.455753,
+          "minus12DbfsImdDb": 1.629519
+        }
+      },
+      "playbackDominant": {
+        "hz100": {
+          "minus24DbfsImdDb": -17.432491,
+          "minus18DbfsImdDb": -16.013791,
+          "minus12DbfsImdDb": -14.190905
+        },
+        "hz1000": {
+          "minus24DbfsImdDb": -7.775159,
+          "minus18DbfsImdDb": -6.541765,
+          "minus12DbfsImdDb": -5.558748
+        },
+        "hz10000": {
+          "minus24DbfsImdDb": -7.448083,
+          "minus18DbfsImdDb": -5.624547,
+          "minus12DbfsImdDb": -7.823268
+        }
+      }
     }
   }
 }

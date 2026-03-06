@@ -1,6 +1,32 @@
 import { describe, it, expect } from 'vitest';
 import { cohenHelieIk, gridCurrentIg, cohenHelieJacobian, AmplifierModel } from '../amplifier';
 import type { TubeCircuitParams } from '../amplifier';
+import { PRESETS } from '../presets';
+
+function rms(signal: number[], start = 0): number {
+  let sumSq = 0;
+  let count = 0;
+  for (let i = start; i < signal.length; i++) {
+    sumSq += signal[i] * signal[i];
+    count++;
+  }
+  return Math.sqrt(sumSq / Math.max(1, count));
+}
+
+function residualRms(reference: number[], candidate: number[], gain = 1, start = 0): number {
+  let sumSq = 0;
+  let count = 0;
+  for (let i = start; i < Math.min(reference.length, candidate.length); i++) {
+    const residual = reference[i] - candidate[i] * gain;
+    sumSq += residual * residual;
+    count++;
+  }
+  return Math.sqrt(sumSq / Math.max(1, count));
+}
+
+function db(value: number): number {
+  return 20 * Math.log10(Math.max(value, 1e-12));
+}
 
 describe('Cohen-Helie 12AX7 tube model', () => {
   // Parameters from Cohen & Helie (DAFx 2010), fitted to 12AX7 measurements
@@ -459,6 +485,87 @@ describe('transistor dynamic bias model', () => {
     amp.reset();
     const out = amp.process(0.01);
     expect(out).toBeCloseTo(Math.tanh(0.01), 2);
+  });
+});
+
+describe('stage-specific amplifier asymmetry', () => {
+  it('Ampex record and playback tube stage configs produce measurably different hot-tone outputs at equal drive', () => {
+    const fs = 48_000;
+    const drive = 0.65;
+    const record = new AmplifierModel(
+      'tube',
+      drive,
+      PRESETS.ampex.recordAmpConfig?.tubeCircuit,
+      fs,
+      1,
+      PRESETS.ampex.recordAmpConfig,
+    );
+    const playback = new AmplifierModel(
+      'tube',
+      drive,
+      PRESETS.ampex.playbackAmpConfig?.tubeCircuit,
+      fs,
+      1,
+      PRESETS.ampex.playbackAmpConfig,
+    );
+
+    const recordOut: number[] = [];
+    const playbackOut: number[] = [];
+    let maxRecordSat = 0;
+    let maxPlaybackSat = 0;
+    for (let i = 0; i < fs * 0.25; i++) {
+      const x = 0.6 * Math.sin(2 * Math.PI * 1_000 * i / fs);
+      recordOut.push(record.process(x));
+      playbackOut.push(playback.process(x));
+      maxRecordSat = Math.max(maxRecordSat, record.getSaturationDepth());
+      maxPlaybackSat = Math.max(maxPlaybackSat, playback.getSaturationDepth());
+    }
+
+    const start = Math.floor(recordOut.length * 0.5);
+    const gainMatch = rms(recordOut, start) / Math.max(rms(playbackOut, start), 1e-12);
+    const nullResidualDb = db(residualRms(recordOut, playbackOut, gainMatch, start));
+
+    expect(nullResidualDb).toBeGreaterThan(-32);
+    expect(Math.abs(maxRecordSat - maxPlaybackSat)).toBeGreaterThan(0.01);
+  });
+
+  it('MCI record and playback transistor voicings produce measurably different bias-memory behavior at equal drive', () => {
+    const fs = 48_000;
+    const drive = 0.75;
+    const record = new AmplifierModel(
+      'transistor',
+      drive,
+      undefined,
+      fs,
+      1,
+      PRESETS.mci.recordAmpConfig,
+    );
+    const playback = new AmplifierModel(
+      'transistor',
+      drive,
+      undefined,
+      fs,
+      1,
+      PRESETS.mci.playbackAmpConfig,
+    );
+
+    const recordOut: number[] = [];
+    const playbackOut: number[] = [];
+    let maxRecordSat = 0;
+    let maxPlaybackSat = 0;
+    for (let i = 0; i < fs * 0.3; i++) {
+      const x = 0.9 * Math.sin(2 * Math.PI * 120 * i / fs);
+      recordOut.push(record.process(x));
+      playbackOut.push(playback.process(x));
+      maxRecordSat = Math.max(maxRecordSat, record.getSaturationDepth());
+      maxPlaybackSat = Math.max(maxPlaybackSat, playback.getSaturationDepth());
+    }
+
+    const start = Math.floor(recordOut.length * 0.5);
+    const gainMatch = rms(recordOut, start) / Math.max(rms(playbackOut, start), 1e-12);
+    const nullResidualDb = db(residualRms(recordOut, playbackOut, gainMatch, start));
+
+    expect(nullResidualDb).toBeGreaterThan(-31);
   });
 });
 

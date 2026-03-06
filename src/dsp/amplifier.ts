@@ -108,6 +108,26 @@ export interface TubeCircuitParams {
   Vpp: number;     // plate supply voltage (volts)
 }
 
+export interface TransistorStageParams {
+  /** Bias-network recovery time constant in milliseconds. */
+  biasRecoveryMs?: number;
+  /** Rectified bias accumulation strength. */
+  biasStrength?: number;
+  /** Positive-rail saturation hardness. 1 = legacy behavior. */
+  positiveSaturation?: number;
+  /** Negative-rail saturation hardness. 1 = legacy behavior. */
+  negativeSaturation?: number;
+}
+
+export interface AmplifierStageConfig {
+  /** Effective source impedance feeding the stage (tube mode only). */
+  sourceResistance?: number;
+  /** Per-stage tube circuit calibration. */
+  tubeCircuit?: TubeCircuitParams;
+  /** Per-stage transistor voicing calibration. */
+  transistor?: TransistorStageParams;
+}
+
 interface AmplifierRuntimeState {
   txBiasState: number;
   x: [number, number, number, number];
@@ -127,6 +147,14 @@ const DEFAULT_CIRCUIT: TubeCircuitParams = {
   Vpp: 250,
 };
 
+const DEFAULT_SOURCE_RESISTANCE = 68e3;
+const DEFAULT_TRANSISTOR_PARAMS: Required<TransistorStageParams> = {
+  biasRecoveryMs: 50,
+  biasStrength: 0.1,
+  positiveSaturation: 1,
+  negativeSaturation: 1,
+};
+
 // ---------------------------------------------------------------------------
 // AmplifierModel
 // ---------------------------------------------------------------------------
@@ -138,10 +166,14 @@ export class AmplifierModel {
   private circuitParams: TubeCircuitParams;
   private fs: number;
   private maxNRIter: number;
+  private sourceResistance: number;
 
   // Transistor mode state (dynamic bias from coupling capacitor charging)
   private txBiasState = 0;           // DC offset from coupling cap rectification
   private txBiasAlpha = 0;           // one-pole recovery coefficient (~50ms)
+  private txBiasStrength = DEFAULT_TRANSISTOR_PARAMS.biasStrength;
+  private txPositiveSaturation = DEFAULT_TRANSISTOR_PARAMS.positiveSaturation;
+  private txNegativeSaturation = DEFAULT_TRANSISTOR_PARAMS.negativeSaturation;
 
   // Tube mode state (4 states now, natively including C_ga for Miller effect)
   private x = [0, 0, 0, 0];         // [V_Cc_in, V_Cc_out, V_Ck, V_Cga]
@@ -153,7 +185,6 @@ export class AmplifierModel {
   
   // Physical constants
   private static readonly C_ga = 1.7e-12; // 12AX7 grid-to-anode capacitance (1.7pF)
-  private static readonly R_source = 68e3; // Typical guitar/pedal source impedance (68k)
 
   // Output load resistance (next stage grid input impedance)
   private currentRload = 1e6;
@@ -203,13 +234,23 @@ export class AmplifierModel {
     circuitParams?: TubeCircuitParams,
     fs = 48000,
     oversampleFactor = 1,
+    stageConfig?: AmplifierStageConfig,
   ) {
     this.mode = mode;
     this.driveRaw = drive;
     this.drive = mode === 'tube' ? 0.1 + drive * 5.0 : drive;
-    this.circuitParams = circuitParams ?? DEFAULT_CIRCUIT;
+    this.circuitParams = stageConfig?.tubeCircuit ?? circuitParams ?? DEFAULT_CIRCUIT;
     this.fs = fs;
-    this.txBiasAlpha = Math.exp(-1 / (fs * 0.05));
+    this.sourceResistance = Math.max(1, stageConfig?.sourceResistance ?? DEFAULT_SOURCE_RESISTANCE);
+    const transistor = {
+      ...DEFAULT_TRANSISTOR_PARAMS,
+      ...stageConfig?.transistor,
+    };
+    const biasRecoveryMs = Math.max(1, transistor.biasRecoveryMs);
+    this.txBiasAlpha = Math.exp(-1 / (fs * (biasRecoveryMs / 1000)));
+    this.txBiasStrength = Math.max(0, transistor.biasStrength);
+    this.txPositiveSaturation = Math.max(0.1, transistor.positiveSaturation);
+    this.txNegativeSaturation = Math.max(0.1, transistor.negativeSaturation);
 
     // At higher OS rates inter-sample changes are smaller, so NR converges faster
     // from the previous sample's solution. Fewer iters × more frequent solves gives
@@ -377,7 +418,7 @@ export class AmplifierModel {
     const Rc3 = T / (2 * Ck);
     const Rc4 = T / (2 * AmplifierModel.C_ga);
 
-    const R_in = Rc1 + AmplifierModel.R_source;
+    const R_in = Rc1 + this.sourceResistance;
 
     // Node conductance sums for the 2x2 grid-plate system
     const G11 = 1 / R_in + 1 / Rg + 1 / Rc4;
@@ -446,7 +487,7 @@ export class AmplifierModel {
 
     // State update fractions
     const rc1_frac = Rc1 / R_in;
-    const rs_frac = AmplifierModel.R_source / R_in;
+    const rs_frac = this.sourceResistance / R_in;
     const rc_frac = Rc2 / (Rc2 + Rl);
     const rl_frac = Rl / (Rc2 + Rl);
 
@@ -749,14 +790,14 @@ export class AmplifierModel {
     // negative rail is softer (approaching cutoff)
     let y: number;
     if (biasedX > 0) {
-      y = Math.tanh(biasedX);
+      y = Math.tanh(biasedX * this.txPositiveSaturation) / this.txPositiveSaturation;
     } else {
-      y = -1 + Math.exp(Math.max(-10, biasedX));
+      y = (-1 + Math.exp(Math.max(-10, biasedX * this.txNegativeSaturation))) / this.txNegativeSaturation;
     }
 
     // Update coupling capacitor bias: rectifies signal energy to shift DC operating point.
     // Recovery via one-pole filter models cap discharging through bias network.
-    const current = (y - biasedX) * 0.1;
+    const current = (y - biasedX) * this.txBiasStrength;
     this.txBiasState = this.txBiasState * this.txBiasAlpha
                      + current * (1 - this.txBiasAlpha);
 

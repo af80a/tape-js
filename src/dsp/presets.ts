@@ -1,4 +1,4 @@
-import type { TubeCircuitParams } from './amplifier';
+import type { AmplifierStageConfig } from './amplifier';
 
 export interface TapeFormulation {
   /** Pinning parameter (coercivity proxy). Lower = softer tape, easier saturation. */
@@ -15,7 +15,8 @@ export interface MachinePreset {
   ampType: 'tube' | 'transistor';
   inputTransformer: { lfCutoff: number; hfResonance: number; hfQ: number; satAmount: number; asymmetry: number };
   outputTransformer: { lfCutoff: number; hfResonance: number; hfQ: number; satAmount: number; asymmetry: number };
-  tubeCircuit?: TubeCircuitParams;
+  recordAmpConfig?: AmplifierStageConfig;
+  playbackAmpConfig?: AmplifierStageConfig;
   defaultFormula: string;
   drive: number;
   saturation: number;
@@ -55,9 +56,19 @@ export const PRESETS: Record<string, MachinePreset> = {
     // Haufe RK378 — moderate core asymmetry, clean nickel core
     inputTransformer: { lfCutoff: 12, hfResonance: 21000, hfQ: 0.7, satAmount: 0.8, asymmetry: 0.015 },
     outputTransformer: { lfCutoff: 10, hfResonance: 20000, hfQ: 0.6, satAmount: 0.7, asymmetry: 0.015 },
-    tubeCircuit: {
-      Rp: 100e3, Rg: 1e6, Rk: 1.5e3,
-      Cc_in: 22e-9, Cc_out: 100e-9, Ck: 25e-6, Vpp: 250,
+    recordAmpConfig: {
+      sourceResistance: 24e3,
+      tubeCircuit: {
+        Rp: 100e3, Rg: 1e6, Rk: 1.5e3,
+        Cc_in: 33e-9, Cc_out: 150e-9, Ck: 33e-6, Vpp: 265,
+      },
+    },
+    playbackAmpConfig: {
+      sourceResistance: 100e3,
+      tubeCircuit: {
+        Rp: 100e3, Rg: 1e6, Rk: 1.5e3,
+        Cc_in: 18e-9, Cc_out: 82e-9, Ck: 18e-6, Vpp: 255,
+      },
     },
     defaultFormula: '900',
     drive: 0.25,
@@ -84,9 +95,19 @@ export const PRESETS: Record<string, MachinePreset> = {
     // Jensen JT-110K-HPC — very clean, high-nickel mu-metal core
     inputTransformer: { lfCutoff: 18, hfResonance: 20000, hfQ: 1.0, satAmount: 1.2, asymmetry: 0.005 },
     outputTransformer: { lfCutoff: 15, hfResonance: 19000, hfQ: 0.9, satAmount: 1.0, asymmetry: 0.005 },
-    tubeCircuit: {
-      Rp: 220e3, Rg: 470e3, Rk: 1.8e3,
-      Cc_in: 47e-9, Cc_out: 220e-9, Ck: 22e-6, Vpp: 300,
+    recordAmpConfig: {
+      sourceResistance: 33e3,
+      tubeCircuit: {
+        Rp: 220e3, Rg: 470e3, Rk: 1.8e3,
+        Cc_in: 56e-9, Cc_out: 270e-9, Ck: 27e-6, Vpp: 305,
+      },
+    },
+    playbackAmpConfig: {
+      sourceResistance: 120e3,
+      tubeCircuit: {
+        Rp: 220e3, Rg: 470e3, Rk: 1.8e3,
+        Cc_in: 39e-9, Cc_out: 180e-9, Ck: 18e-6, Vpp: 295,
+      },
     },
     defaultFormula: '456',
     drive: 0.35,
@@ -104,7 +125,7 @@ export const PRESETS: Record<string, MachinePreset> = {
     wowDefault: 0.12,
     flutterDefault: 0.06,
     hissDefault: 0.04,
-    outputCalibrationGain: 7.4,
+    outputCalibrationGain: 7.55,
   },
   mci: {
     name: 'MCI JH-24',
@@ -113,6 +134,22 @@ export const PRESETS: Record<string, MachinePreset> = {
     // Generic steel-core transformers — more colored, higher asymmetry
     inputTransformer: { lfCutoff: 22, hfResonance: 18000, hfQ: 0.9, satAmount: 1.1, asymmetry: 0.025 },
     outputTransformer: { lfCutoff: 20, hfResonance: 17000, hfQ: 0.8, satAmount: 0.9, asymmetry: 0.025 },
+    recordAmpConfig: {
+      transistor: {
+        biasRecoveryMs: 35,
+        biasStrength: 0.08,
+        positiveSaturation: 1.25,
+        negativeSaturation: 0.85,
+      },
+    },
+    playbackAmpConfig: {
+      transistor: {
+        biasRecoveryMs: 90,
+        biasStrength: 0.14,
+        positiveSaturation: 0.9,
+        negativeSaturation: 1.2,
+      },
+    },
     defaultFormula: '499',
     drive: 0.45,
     saturation: 0.5,

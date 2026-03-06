@@ -384,14 +384,18 @@ class TapeProcessor extends AudioWorkletProcessor {
     }
   }
 
-  private buildAmplifier(ampType: AmpType, drive: number): AmplifierModel {
-    const circuit = ampType === 'tube' ? this.currentPreset.tubeCircuit : undefined;
+  private buildAmplifier(stageId: AmplifierStageId, ampType: AmpType, drive: number): AmplifierModel {
+    const config = stageId === 'recordAmp'
+      ? this.currentPreset.recordAmpConfig
+      : this.currentPreset.playbackAmpConfig;
+    const circuit = ampType === 'tube' ? config?.tubeCircuit : undefined;
     return new AmplifierModel(
       ampType,
       drive,
       circuit,
       sampleRate * this.oversampleFactor,
       this.oversampleFactor,
+      config,
     );
   }
 
@@ -464,9 +468,9 @@ class TapeProcessor extends AudioWorkletProcessor {
       : this.currentPreset.playbackAmpDrive;
     for (const dsp of this.channels) {
       if (stageId === 'recordAmp') {
-        dsp.recordAmp = this.buildAmplifier(ampType, drive);
+        dsp.recordAmp = this.buildAmplifier(stageId, ampType, drive);
       } else {
-        dsp.playbackAmp = this.buildAmplifier(ampType, drive);
+        dsp.playbackAmp = this.buildAmplifier(stageId, ampType, drive);
       }
     }
   }
@@ -621,7 +625,7 @@ class TapeProcessor extends AudioWorkletProcessor {
     osFactor: number,
   ): ChannelDSP {
     const inputXfmr = new TransformerModel(fs * osFactor, preset.inputTransformer);
-    const recordAmp = this.buildAmplifier(preset.ampType, preset.recordAmpDrive);
+    const recordAmp = this.buildAmplifier('recordAmp', preset.ampType, preset.recordAmpDrive);
     const recordEQ = this.buildEq(preset.eqStandard, 'record');
     const biasContour = new BiasContour(fs * osFactor, this.tapeSpeed, preset.biasDefault);
     biasContour.setBias(preset.biasDefault);
@@ -655,7 +659,7 @@ class TapeProcessor extends AudioWorkletProcessor {
     azimuth.setWeave(preset.azimuthWeaveDefault);
 
     const playbackOversampler = new Oversampler(osFactor, this.renderBlockSize);
-    const playbackAmp = this.buildAmplifier(preset.ampType, preset.playbackAmpDrive);
+    const playbackAmp = this.buildAmplifier('playbackAmp', preset.ampType, preset.playbackAmpDrive);
     const playbackEQ = this.buildEq(preset.eqStandard, 'playback');
     const outputXfmr = new TransformerModel(fs * osFactor, preset.outputTransformer);
 
