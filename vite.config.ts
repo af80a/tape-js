@@ -2,7 +2,17 @@ import { defineConfig } from 'vite';
 import { resolve } from 'path';
 import react from '@vitejs/plugin-react';
 
+function normalizeBasePath(value?: string): string {
+  if (!value || value === '/') {
+    return '/';
+  }
+
+  const withLeadingSlash = value.startsWith('/') ? value : `/${value}`;
+  return withLeadingSlash.endsWith('/') ? withLeadingSlash : `${withLeadingSlash}/`;
+}
+
 export default defineConfig({
+  base: normalizeBasePath(process.env.BASE_PATH),
   plugins: [react()],
   build: {
     target: 'esnext',

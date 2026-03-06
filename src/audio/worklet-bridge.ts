@@ -44,7 +44,7 @@ export class WorkletBridge {
 export function getWorkletUrl(): string {
   return import.meta.env.DEV
     ? '/src/worklet/tape-processor.ts'
-    : '/worklets/tape-processor.js';
+    : `${import.meta.env.BASE_URL}worklets/tape-processor.js`;
 }
 
 /**
