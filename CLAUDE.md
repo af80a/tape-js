@@ -17,12 +17,16 @@ npm run dev          # Start Vite dev server
 npm run build        # tsc + vite build (outputs to dist/)
 npm test             # Run vitest tests once
 npm run test:watch   # Run tests in watch mode
+npm run test:tape-baseline    # Compare current processor against the stored sound baseline
+npm run update:tape-baseline  # Regenerate the stored sound baseline after an intentional sonic change
 ```
 
 To run a single test file:
 ```bash
 npx vitest run src/dsp/__tests__/hysteresis.test.ts
 ```
+
+When changing DSP, the worklet, or any code that can affect sound, run `npm run test:tape-baseline` before considering the work done. Only run `npm run update:tape-baseline` when the sonic change is intentional and reviewed; do not refresh the baseline to mask a regression.
 
 ## Architecture
 

@@ -122,8 +122,98 @@ function linearToMinimumPhase(h: Float64Array): Float64Array {
   return x_re.slice(0, h.length);
 }
 
+type OversamplingFilters = {
+  tapsPerPhase: number;
+  upsamplePhases: Float64Array[];
+  downsampleKernel: Float64Array;
+};
+
+function createWindowedSincKernel(length: number, cutoff: number): Float64Array {
+  const kernel = new Float64Array(length);
+  const mid = (length - 1) / 2;
+  const kaiserBeta = 10.0; // ~100dB stopband attenuation (24-bit quality)
+  const I0beta = besselI0(kaiserBeta);
+
+  for (let i = 0; i < length; i++) {
+    // Kaiser window
+    const nNorm = (2 * i) / (length - 1) - 1; // normalized to [-1, 1]
+    const sqrtArg = 1 - nNorm * nNorm;
+    const w = besselI0(kaiserBeta * Math.sqrt(Math.max(0, sqrtArg))) / I0beta;
+
+    // Sinc function
+    const x = i - mid;
+    let sinc: number;
+    if (x === 0) {
+      sinc = 1;
+    } else {
+      const arg = Math.PI * cutoff * x;
+      sinc = Math.sin(arg) / arg;
+    }
+
+    kernel[i] = w * sinc;
+  }
+
+  return kernel;
+}
+
+function sumKernel(kernel: Float64Array): number {
+  let sum = 0;
+  for (let i = 0; i < kernel.length; i++) {
+    sum += kernel[i];
+  }
+  return sum;
+}
+
+function scaleKernel(kernel: Float64Array, scale: number): Float64Array {
+  const scaled = new Float64Array(kernel.length);
+  for (let i = 0; i < kernel.length; i++) {
+    scaled[i] = kernel[i] * scale;
+  }
+  return scaled;
+}
+
+function createUpsamplePhases(kernel: Float64Array, factor: number): {
+  tapsPerPhase: number;
+  phases: Float64Array[];
+} {
+  const tapsPerPhase = Math.ceil(kernel.length / factor);
+
+  // Pad kernel to a multiple of factor to make phase arrays equal length
+  const paddedKernel = new Float64Array(factor * tapsPerPhase);
+  paddedKernel.set(kernel);
+
+  const phases: Float64Array[] = [];
+  for (let p = 0; p < factor; p++) {
+    const phase = new Float64Array(tapsPerPhase);
+    for (let t = 0; t < tapsPerPhase; t++) {
+      phase[t] = paddedKernel[t * factor + p];
+    }
+    phases.push(phase);
+  }
+
+  return { tapsPerPhase, phases };
+}
+
+function designOversamplingFilters(factor: number): OversamplingFilters {
+  const length = 31 * factor + 1; // filter length (odd)
+  const minPhaseKernel = linearToMinimumPhase(
+    createWindowedSincKernel(length, 1 / factor),
+  );
+  const dcGain = sumKernel(minPhaseKernel);
+  const { tapsPerPhase, phases } = createUpsamplePhases(
+    scaleKernel(minPhaseKernel, factor / dcGain),
+    factor,
+  );
+
+  return {
+    tapsPerPhase,
+    upsamplePhases: phases,
+    downsampleKernel: scaleKernel(minPhaseKernel, 1 / dcGain),
+  };
+}
+
 export class Oversampler {
-  /** Oversampling factor (1 = bypass, 2 or 4). */
+  /** Oversampling factor (1 = bypass, higher values enable filtering). */
   readonly factor: number;
 
   /** Number of taps per phase in the polyphase filters. */
@@ -154,7 +244,7 @@ export class Oversampler {
   private downsampleOutput: Float32Array;
 
   /**
-   * @param factor  Oversampling factor: 1 (bypass), 2, or 4.
+   * @param factor  Oversampling factor: 1 (bypass) or any higher integer.
    * @param maxInputLength  Maximum input length to pre-allocate for (default 1).
    */
   constructor(factor: number, maxInputLength = 1) {
@@ -172,79 +262,17 @@ export class Oversampler {
       return;
     }
 
-    // ---- Design Kaiser-windowed sinc lowpass FIR ----
-    const N = 31 * factor + 1; // filter length (odd)
-    const cutoff = 1 / factor; // normalized to oversampled Nyquist
-    const baseKernel = new Float64Array(N);
-
-    const mid = (N - 1) / 2;
-    const kaiserBeta = 10.0; // ~100dB stopband attenuation (24-bit quality)
-    const I0beta = besselI0(kaiserBeta);
-
-    for (let i = 0; i < N; i++) {
-      // Kaiser window
-      const nNorm = (2 * i) / (N - 1) - 1; // normalized to [-1, 1]
-      const sqrtArg = 1 - nNorm * nNorm;
-      const w = besselI0(kaiserBeta * Math.sqrt(Math.max(0, sqrtArg))) / I0beta;
-
-      // Sinc function
-      const x = i - mid;
-      let sinc: number;
-      if (x === 0) {
-        sinc = 1;
-      } else {
-        const arg = Math.PI * cutoff * x;
-        sinc = Math.sin(arg) / arg;
-      }
-
-      baseKernel[i] = w * sinc;
-    }
-
-    // Convert linear-phase kernel to minimum-phase to eliminate pre-ringing
-    const minPhaseKernel = linearToMinimumPhase(baseKernel);
-
-    // Compute unnormalized DC gain.
-    let dcGain = 0;
-    for (let i = 0; i < N; i++) {
-      dcGain += minPhaseKernel[i];
-    }
-
-    // Upsample kernel: normalize DC gain to `factor`.
-    const upsampleScale = factor / dcGain;
-    const upsampleKernel = new Float64Array(N);
-    for (let i = 0; i < N; i++) {
-      upsampleKernel[i] = minPhaseKernel[i] * upsampleScale;
-    }
-
-    // Downsample kernel: normalize DC gain to 1 (anti-alias only).
-    const downsampleScale = 1 / dcGain;
-    this.downsampleKernel = new Float64Array(N);
-    for (let i = 0; i < N; i++) {
-      this.downsampleKernel[i] = minPhaseKernel[i] * downsampleScale;
-    }
-
-    // ---- Decompose Upsample Kernel into Polyphase Components ----
-    this.tapsPerPhase = Math.ceil(N / factor);
-    
-    // Pad kernel to a multiple of factor to make phase arrays equal length
-    const paddedUpsampleKernel = new Float64Array(factor * this.tapsPerPhase);
-    paddedUpsampleKernel.set(upsampleKernel);
-
-    this.upsamplePhases = [];
-    for (let p = 0; p < factor; p++) {
-      const phase = new Float64Array(this.tapsPerPhase);
-      for (let t = 0; t < this.tapsPerPhase; t++) {
-        phase[t] = paddedUpsampleKernel[t * factor + p];
-      }
-      this.upsamplePhases.push(phase);
-    }
+    const filters = designOversamplingFilters(factor);
+    this.tapsPerPhase = filters.tapsPerPhase;
+    this.upsamplePhases = filters.upsamplePhases;
+    this.downsampleKernel = filters.downsampleKernel;
 
     // States are now circular buffers
     this.upsampleState = new Float64Array(this.tapsPerPhase);
     // Double-buffer: size 2N lets convolution read state[idx + j] without inner-loop modulo.
     // Mirror each written sample at state[idx] and state[idx + N] so the window
     // [idx, idx+N) is always valid regardless of wrap position.
-    this.downsampleState = new Float64Array(N * 2);
+    this.downsampleState = new Float64Array(this.downsampleKernel.length * 2);
     
     this.upsampleStateIdx = 0;
     this.downsampleStateIdx = 0;
