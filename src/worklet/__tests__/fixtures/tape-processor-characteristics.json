@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "generatedAt": "2026-03-06T11:53:07.894Z",
+  "sampleRate": 48000,
+  "scenarios": {
+    "alignment1k": {
+      "studer": {
+        "gainDb": 0.008523,
+        "thdDb": -13.897822,
+        "rmsDb": -17.815921,
+        "residualDb": -30.712093
+      },
+      "ampex": {
+        "gainDb": -0.015269,
+        "thdDb": -18.742314,
+        "rmsDb": -17.955965,
+        "residualDb": -32.815093
+      },
+      "mci": {
+        "gainDb": -0.002544,
+        "thdDb": -28.09803,
+        "rmsDb": -17.995816,
+        "residualDb": -40.350546
+      }
+    },
+    "overload1kAmpex": {
+      "nominal": {
+        "gainDb": -0.015269,
+        "thdDb": -18.742314,
+        "rmsDb": -17.955965,
+        "residualDb": -32.815093
+      },
+      "hot": {
+        "gainDb": -4.918492,
+        "thdDb": -11.63104,
+        "rmsDb": -16.624195,
+        "residualDb": -20.040966
+      }
+    },
+    "highFrequency16kAmpex": {
+      "ips15GainDb": -24.027293,
+      "ips30GainDb": -23.12936,
+      "deltaDb": 0.897932
+    },
+    "twoToneImdAmpex": {
+      "lowImdDb": -17.535809,
+      "highImdDb": -3.831288,
+      "nullResidualDb": -25.070696
+    },
+    "predictorBurstAmpex": {
+      "recoveryRatio": 1.032026,
+      "transientResidualDb": -23.309349
+    }
+  }
+}

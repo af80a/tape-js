@@ -8,7 +8,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:tape-baseline": "vitest run src/worklet/__tests__/tape-processor-baseline.test.ts",
+    "update:tape-baseline": "UPDATE_TAPE_BASELINE=1 vitest run src/worklet/__tests__/tape-processor-baseline.test.ts"
   },
   "keywords": [],
   "author": "",

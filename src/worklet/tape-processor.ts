@@ -61,6 +61,8 @@ const ALL_STAGE_IDS: StageId[] = [
 
 type AmpType = 'tube' | 'transistor';
 type EQStandard = 'NAB' | 'IEC';
+type AmplifierStageId = 'recordAmp' | 'playbackAmp';
+type EQStageId = 'recordEQ' | 'playbackEQ';
 type VariantStageId = 'recordAmp' | 'playbackAmp' | 'recordEQ' | 'playbackEQ';
 type RecordCouplingMode = 'delayed' | 'predictor';
 
@@ -68,6 +70,13 @@ const VALID_TAPE_SPEEDS: readonly TapeSpeed[] = [30, 15, 7.5, 3.75];
 const MIN_COUPLING_AMOUNT = 0.25;
 const MAX_COUPLING_AMOUNT = 3.0;
 const COUPLING_LEVEL_MATCH_EXPONENT = 0.7;
+const SATURATION_STAGE_IDS: readonly StageId[] = [
+  'inputXfmr',
+  'recordAmp',
+  'hysteresis',
+  'playbackAmp',
+  'outputXfmr',
+];
 
 // ---------------------------------------------------------------------------
 // Per-channel DSP state
@@ -89,6 +98,17 @@ interface ChannelDSP {
   outputXfmr: TransformerModel;
   transport: TransportModel;
   noise: TapeNoise;
+}
+
+interface StageLevelState {
+  vuPower: number[][];
+  peakHold: number[][];
+}
+
+interface StageMeterSnapshot {
+  vuDb: number[];
+  peakDb: number[];
+  saturation?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -156,7 +176,7 @@ class TapeProcessor extends AudioWorkletProcessor {
   private peakReleaseCoeff = 0;
 
   // Per-stage metering accumulators: [channel][slot] where slot=0:input, slot=1:output
-  private stageLevels: Map<StageId, { vuPower: number[][]; peakHold: number[][] }> = new Map();
+  private stageLevels: Map<StageId, StageLevelState> = new Map();
 
   // Per-stage saturation accumulators (smoothed 0-1 depth, only for nonlinear stages)
   private stageSaturation: Map<StageId, number[]> = new Map();
@@ -234,81 +254,89 @@ class TapeProcessor extends AudioWorkletProcessor {
     // Meter timing: send meter data approximately every 50 ms
     this.nextMeterFrame = Math.floor((50 / 1000) * sampleRate);
 
-    // Message handling
     this.port.onmessage = (event: MessageEvent) => {
-      const data = event.data as Record<string, unknown>;
-      switch (data.type) {
-        case 'set-preset': {
-          this.currentPreset = this.resolvePreset(data.value);
-          this.currentFormula = null;
-          this.stageVariantOverrides.clear();
-          this.stageBypassed.clear();
-          this.stageFade.clear();
-          this.clearStageOverrides();
-          this.initDSP(2, this.currentPreset, this.oversampleFactor, this.tapeSpeed);
-          break;
-        }
-        case 'set-speed': {
-          const speed = this.normalizeTapeSpeed(data.value);
-          this.tapeSpeed = speed;
-          for (const dsp of this.channels) {
-            dsp.recordEQ.setSpeed(speed);
-            dsp.biasContour.setSpeed(speed);
-            dsp.wavelengthContour.setSpeed(speed);
-            dsp.playbackEQ.setSpeed(speed);
-            dsp.head.setSpeed(speed);
-            dsp.azimuth.setSpeed(speed);
-          }
-          break;
-        }
-        case 'set-oversample':
-          this.oversampleFactor = this.normalizeOversampleFactor(data.value);
-          this.initDSP(2, this.currentPreset, this.oversampleFactor, this.tapeSpeed);
-          break;
-        case 'set-coupling-amount':
-          this.couplingAmount = this.normalizeCouplingAmount(data.value);
-          break;
-        case 'set-record-coupling-mode':
-          this.recordCouplingMode = this.normalizeRecordCouplingMode(data.value);
-          break;
-        case 'set-formula':
-          if (typeof data.value === 'string' && FORMULAS[data.value]) {
-            this.currentFormula = data.value;
-            this.applyFormula(data.value);
-          }
-          break;
-        case 'set-bypass':
-          this.bypassed = !!data.value;
-          break;
-        case 'clear-param-overrides':
-          // CompactView changed an AudioParam — clear all overrides so AudioParams take effect.
-          this.clearStageOverrides();
-          break;
-        case 'set-stage-bypass':
-          if (this.isStageId(data.stageId)) {
-            this.stageBypassed.set(data.stageId, !!data.value);
-          }
-          break;
-        case 'set-stage-variant':
-          if (this.isStageId(data.stageId) && typeof data.value === 'string') {
-            this.handleVariantChange(data.stageId, data.value);
-          }
-          break;
-        case 'set-stage-param':
-          if (
-            this.isStageId(data.stageId) &&
-            typeof data.param === 'string' &&
-            typeof data.value === 'number' &&
-            Number.isFinite(data.value)
-          ) {
-            this.handleStageParam(data.stageId, data.param, data.value);
-          }
-          break;
-        case 'dispose':
-          this.alive = false;
-          break;
-      }
+      this.handleMessage(event.data as Record<string, unknown>);
     };
+  }
+
+  private handleMessage(data: Record<string, unknown>): void {
+    switch (data.type) {
+      case 'set-preset':
+        this.resetPresetState(data.value);
+        break;
+      case 'set-speed':
+        this.updateTapeSpeed(data.value);
+        break;
+      case 'set-oversample':
+        this.oversampleFactor = this.normalizeOversampleFactor(data.value);
+        this.initDSP(2, this.currentPreset, this.oversampleFactor, this.tapeSpeed);
+        break;
+      case 'set-coupling-amount':
+        this.couplingAmount = this.normalizeCouplingAmount(data.value);
+        break;
+      case 'set-record-coupling-mode':
+        this.recordCouplingMode = this.normalizeRecordCouplingMode(data.value);
+        break;
+      case 'set-formula':
+        if (typeof data.value === 'string' && FORMULAS[data.value]) {
+          this.currentFormula = data.value;
+          this.applyFormula(data.value);
+        }
+        break;
+      case 'set-bypass':
+        this.bypassed = !!data.value;
+        break;
+      case 'clear-param-overrides':
+        // CompactView changed an AudioParam — clear all overrides so AudioParams take effect.
+        this.clearStageOverrides();
+        break;
+      case 'set-stage-bypass':
+        if (this.isStageId(data.stageId)) {
+          this.stageBypassed.set(data.stageId, !!data.value);
+        }
+        break;
+      case 'set-stage-variant':
+        if (this.isStageId(data.stageId) && typeof data.value === 'string') {
+          this.handleVariantChange(data.stageId, data.value);
+        }
+        break;
+      case 'set-stage-param':
+        if (
+          this.isStageId(data.stageId) &&
+          typeof data.param === 'string' &&
+          typeof data.value === 'number' &&
+          Number.isFinite(data.value)
+        ) {
+          this.handleStageParam(data.stageId, data.param, data.value);
+        }
+        break;
+      case 'dispose':
+        this.alive = false;
+        break;
+    }
+  }
+
+  private resetPresetState(value: unknown): void {
+    this.currentPreset = this.resolvePreset(value);
+    this.currentFormula = null;
+    this.stageVariantOverrides.clear();
+    this.stageBypassed.clear();
+    this.stageFade.clear();
+    this.clearStageOverrides();
+    this.initDSP(2, this.currentPreset, this.oversampleFactor, this.tapeSpeed);
+  }
+
+  private updateTapeSpeed(value: unknown): void {
+    const speed = this.normalizeTapeSpeed(value);
+    this.tapeSpeed = speed;
+    for (const dsp of this.channels) {
+      dsp.recordEQ.setSpeed(speed);
+      dsp.biasContour.setSpeed(speed);
+      dsp.wavelengthContour.setSpeed(speed);
+      dsp.playbackEQ.setSpeed(speed);
+      dsp.head.setSpeed(speed);
+      dsp.azimuth.setSpeed(speed);
+    }
   }
 
   private isStageId(stageId: unknown): stageId is StageId {
@@ -376,6 +404,28 @@ class TapeProcessor extends AudioWorkletProcessor {
     );
   }
 
+  private createStageLevelState(channels: number): StageLevelState {
+    return {
+      vuPower: Array.from({ length: channels }, () => [1e-10, 1e-10]),
+      peakHold: Array.from({ length: channels }, () => [0, 0]),
+    };
+  }
+
+  private initializeStageState(channels: number): void {
+    this.stageLevels.clear();
+    for (const id of ALL_STAGE_IDS) {
+      this.stageLevels.set(id, this.createStageLevelState(channels));
+      if (!this.stageGainLin.has(id)) {
+        this.stageGainLin.set(id, 1.0);
+      }
+    }
+
+    this.stageSaturation.clear();
+    for (const id of SATURATION_STAGE_IDS) {
+      this.stageSaturation.set(id, Array(channels).fill(0));
+    }
+  }
+
   private reapplyVariantOverrides(): void {
     for (const [stageId, value] of this.stageVariantOverrides.entries()) {
       this.handleVariantChange(stageId, value, false);
@@ -390,14 +440,45 @@ class TapeProcessor extends AudioWorkletProcessor {
     }
   }
 
+  private applyFormulaToTargets(
+    target: Pick<ChannelDSP, 'hysteresis' | 'wavelengthContour'>,
+    formulaName: string,
+  ): void {
+    const formula = FORMULAS[formulaName] ?? FORMULAS['456'];
+    target.hysteresis.setK(formula.k);
+    target.hysteresis.setBaseC(formula.c);
+    target.hysteresis.setAlpha(formula.alpha);
+    target.wavelengthContour.setCoercivity(formula.k);
+  }
+
   private applyFormula(formula: string): void {
-    const f = FORMULAS[formula];
-    if (!f) return;
+    if (!FORMULAS[formula]) return;
     for (const dsp of this.channels) {
-      dsp.hysteresis.setK(f.k);
-      dsp.hysteresis.setBaseC(f.c);
-      dsp.hysteresis.setAlpha(f.alpha);
-      dsp.wavelengthContour.setCoercivity(f.k);
+      this.applyFormulaToTargets(dsp, formula);
+    }
+  }
+
+  private rebuildAmplifierStage(stageId: AmplifierStageId, ampType: AmpType): void {
+    const drive = stageId === 'recordAmp'
+      ? this.currentPreset.recordAmpDrive
+      : this.currentPreset.playbackAmpDrive;
+    for (const dsp of this.channels) {
+      if (stageId === 'recordAmp') {
+        dsp.recordAmp = this.buildAmplifier(ampType, drive);
+      } else {
+        dsp.playbackAmp = this.buildAmplifier(ampType, drive);
+      }
+    }
+  }
+
+  private rebuildEqStage(stageId: EQStageId, standard: EQStandard): void {
+    const mode = stageId === 'recordEQ' ? 'record' : 'playback';
+    for (const dsp of this.channels) {
+      if (stageId === 'recordEQ') {
+        dsp.recordEQ = this.buildEq(standard, mode);
+      } else {
+        dsp.playbackEQ = this.buildEq(standard, mode);
+      }
     }
   }
 
@@ -405,13 +486,7 @@ class TapeProcessor extends AudioWorkletProcessor {
     if (stageId === 'recordAmp' || stageId === 'playbackAmp') {
       if (!this.isAmpType(value)) return;
       if (remember) this.stageVariantOverrides.set(stageId, value);
-      for (const dsp of this.channels) {
-        if (stageId === 'recordAmp') {
-          dsp.recordAmp = this.buildAmplifier(value, this.currentPreset.recordAmpDrive);
-        } else {
-          dsp.playbackAmp = this.buildAmplifier(value, this.currentPreset.playbackAmpDrive);
-        }
-      }
+      this.rebuildAmplifierStage(stageId, value);
       this.reapplyStageParamOverrides();
       return;
     }
@@ -419,13 +494,7 @@ class TapeProcessor extends AudioWorkletProcessor {
     if (stageId === 'recordEQ' || stageId === 'playbackEQ') {
       if (!this.isEqStandard(value)) return;
       if (remember) this.stageVariantOverrides.set(stageId, value);
-      for (const dsp of this.channels) {
-        if (stageId === 'recordEQ') {
-          dsp.recordEQ = this.buildEq(value, 'record');
-        } else {
-          dsp.playbackEQ = this.buildEq(value, 'playback');
-        }
-      }
+      this.rebuildEqStage(stageId, value);
       this.reapplyStageParamOverrides();
     }
   }
@@ -445,67 +514,172 @@ class TapeProcessor extends AudioWorkletProcessor {
     this.applyStageParamToDSP(stageId, param, value);
   }
 
+  private applyTransformerParam(transformer: TransformerModel, param: string, value: number): void {
+    switch (param) {
+      case 'inputGain':
+        transformer.reconfigure({ inputGain: value });
+        break;
+      case 'satAmount':
+        transformer.reconfigure({ satAmount: value });
+        break;
+      case 'hfResonance':
+        transformer.reconfigure({ hfResonance: value });
+        break;
+      case 'hfQ':
+        transformer.reconfigure({ hfQ: value });
+        break;
+      case 'lfCutoff':
+        transformer.reconfigure({ lfCutoff: value });
+        break;
+    }
+  }
+
+  private applyAmplifierParam(amp: AmplifierModel, param: string, value: number): void {
+    if (param === 'drive') amp.setDrive(value);
+    else if (param === 'Vpp') amp.setVpp(value);
+  }
+
+  private applyBiasParam(dsp: ChannelDSP, param: string, value: number): void {
+    if (param === 'level') {
+      // Bias is applied parametrically to the hysteresis model.
+      dsp.hysteresis.setBias(value);
+      dsp.biasContour.setBias(value);
+    } else if (param === 'frequency') {
+      // Legacy no-op: additive bias oscillator path was removed.
+    }
+  }
+
+  private applyHysteresisParam(dsp: ChannelDSP, param: string, value: number): void {
+    if (param === 'drive') dsp.hysteresis.setDrive(value);
+    else if (param === 'saturation') dsp.hysteresis.setSaturation(value);
+    else if (param === 'k') dsp.hysteresis.setK(value);
+    else if (param === 'c') dsp.hysteresis.setBaseC(value);
+  }
+
+  private applyHeadParam(dsp: ChannelDSP, param: string, value: number): void {
+    if (param === 'bumpGainDb') dsp.head.setBumpGain(value);
+    else if (param === 'dropouts') dsp.head.setDropoutIntensity(value);
+    else if (param === 'crosstalk') this.crosstalk.setAmount(value);
+    else if (param === 'azimuth') dsp.azimuth.setAzimuth(value);
+  }
+
+  private applyTransportParam(dsp: ChannelDSP, param: string, value: number): void {
+    if (param === 'wow') dsp.transport.setWow(value);
+    else if (param === 'flutter') dsp.transport.setFlutter(value);
+    else if (param === 'wowRate') dsp.transport.setWowRate(value);
+    else if (param === 'flutterRate') dsp.transport.setFlutterRate(value);
+  }
+
+  private applyNoiseParam(dsp: ChannelDSP, param: string, value: number): void {
+    if (param === 'hiss') dsp.noise.setLevel(value);
+  }
+
   private applyStageParamToDSP(stageId: StageId, param: string, value: number): void {
     for (const dsp of this.channels) {
       switch (stageId) {
         case 'inputXfmr':
-          if (param === 'inputGain') dsp.inputXfmr.reconfigure({ inputGain: value });
-          else if (param === 'satAmount') dsp.inputXfmr.reconfigure({ satAmount: value });
-          else if (param === 'hfResonance') dsp.inputXfmr.reconfigure({ hfResonance: value });
-          else if (param === 'hfQ') dsp.inputXfmr.reconfigure({ hfQ: value });
-          else if (param === 'lfCutoff') dsp.inputXfmr.reconfigure({ lfCutoff: value });
+          this.applyTransformerParam(dsp.inputXfmr, param, value);
           break;
         case 'recordAmp':
-          if (param === 'drive') dsp.recordAmp.setDrive(value);
-          else if (param === 'Vpp') dsp.recordAmp.setVpp(value);
+          this.applyAmplifierParam(dsp.recordAmp, param, value);
           break;
         case 'recordEQ':
           if (param === 'color') dsp.recordEQ.setColor(value);
           break;
         case 'bias':
-          if (param === 'level') {
-            // Bias is applied parametrically to the hysteresis model.
-            dsp.hysteresis.setBias(value);
-            dsp.biasContour.setBias(value);
-          } else if (param === 'frequency') {
-            // Legacy no-op: additive bias oscillator path was removed.
-          }
+          this.applyBiasParam(dsp, param, value);
           break;
         case 'hysteresis':
-          if (param === 'drive') dsp.hysteresis.setDrive(value);
-          else if (param === 'saturation') dsp.hysteresis.setSaturation(value);
-          else if (param === 'k') dsp.hysteresis.setK(value);
-          else if (param === 'c') dsp.hysteresis.setBaseC(value);
+          this.applyHysteresisParam(dsp, param, value);
           break;
         case 'head':
-          if (param === 'bumpGainDb') dsp.head.setBumpGain(value);
-          else if (param === 'dropouts') dsp.head.setDropoutIntensity(value);
-          else if (param === 'crosstalk') this.crosstalk.setAmount(value);
-          else if (param === 'azimuth') dsp.azimuth.setAzimuth(value);
+          this.applyHeadParam(dsp, param, value);
           break;
         case 'transport':
-          if (param === 'wow') dsp.transport.setWow(value);
-          else if (param === 'flutter') dsp.transport.setFlutter(value);
-          else if (param === 'wowRate') dsp.transport.setWowRate(value);
-          else if (param === 'flutterRate') dsp.transport.setFlutterRate(value);
+          this.applyTransportParam(dsp, param, value);
           break;
         case 'playbackAmp':
-          if (param === 'drive') dsp.playbackAmp.setDrive(value);
-          else if (param === 'Vpp') dsp.playbackAmp.setVpp(value);
+          this.applyAmplifierParam(dsp.playbackAmp, param, value);
           break;
         case 'outputXfmr':
-          if (param === 'inputGain') dsp.outputXfmr.reconfigure({ inputGain: value });
-          else if (param === 'satAmount') dsp.outputXfmr.reconfigure({ satAmount: value });
-          else if (param === 'hfResonance') dsp.outputXfmr.reconfigure({ hfResonance: value });
-          else if (param === 'hfQ') dsp.outputXfmr.reconfigure({ hfQ: value });
-          else if (param === 'lfCutoff') dsp.outputXfmr.reconfigure({ lfCutoff: value });
+          this.applyTransformerParam(dsp.outputXfmr, param, value);
           break;
         case 'noise':
-          if (param === 'hiss') dsp.noise.setLevel(value);
+          this.applyNoiseParam(dsp, param, value);
           break;
         // 'output' stage: outputGain is handled via override in the process loop
         // (no per-channel DSP object to call — it's a global param)
       }
+    }
+  }
+
+  private createChannelDSP(
+    channel: number,
+    preset: MachinePreset,
+    fs: number,
+    osFactor: number,
+  ): ChannelDSP {
+    const inputXfmr = new TransformerModel(fs * osFactor, preset.inputTransformer);
+    const recordAmp = this.buildAmplifier(preset.ampType, preset.recordAmpDrive);
+    const recordEQ = this.buildEq(preset.eqStandard, 'record');
+    const biasContour = new BiasContour(fs * osFactor, this.tapeSpeed, preset.biasDefault);
+    biasContour.setBias(preset.biasDefault);
+
+    const wavelengthContour = new WavelengthContour(fs * osFactor, this.tapeSpeed, preset.headGapWidth);
+    wavelengthContour.setDrive(preset.drive);
+    wavelengthContour.setSaturation(preset.saturation);
+
+    const hysteresis = new HysteresisProcessor(fs * osFactor);
+    hysteresis.setDrive(preset.drive);
+    hysteresis.setSaturation(preset.saturation);
+    this.applyFormulaToTargets(
+      { hysteresis, wavelengthContour },
+      this.currentFormula ?? preset.defaultFormula,
+    );
+
+    const recordOversampler = new Oversampler(osFactor, this.renderBlockSize);
+    const head = new HeadModel(fs, this.tapeSpeed, {
+      gapWidth: preset.headGapWidth,
+      spacing: preset.headSpacing,
+      bumpGainDb: preset.bumpGainDb,
+    }, channel);
+    const azimuth = new AzimuthModel(fs, channel, this.tapeSpeed, preset.trackSpacing);
+    azimuth.setAzimuth(preset.azimuthDefault);
+
+    const playbackOversampler = new Oversampler(osFactor, this.renderBlockSize);
+    const playbackAmp = this.buildAmplifier(preset.ampType, preset.playbackAmpDrive);
+    const playbackEQ = this.buildEq(preset.eqStandard, 'playback');
+    const outputXfmr = new TransformerModel(fs * osFactor, preset.outputTransformer);
+
+    const transport = new TransportModel(fs, channel);
+    transport.setWow(preset.wowDefault);
+    transport.setFlutter(preset.flutterDefault);
+
+    const noise = new TapeNoise(fs, channel);
+    noise.setLevel(preset.hissDefault);
+
+    return {
+      inputXfmr,
+      recordAmp,
+      recordEQ,
+      biasContour,
+      wavelengthContour,
+      hysteresis,
+      recordOversampler,
+      head,
+      azimuth,
+      playbackOversampler,
+      playbackAmp,
+      playbackEQ,
+      outputXfmr,
+      transport,
+      noise,
+    };
+  }
+
+  private initializeStageFades(): void {
+    for (const id of ALL_STAGE_IDS) {
+      this.stageFade.set(id, (this.stageBypassed.get(id) ?? false) ? 0 : 1);
     }
   }
 
@@ -530,83 +704,11 @@ class TapeProcessor extends AudioWorkletProcessor {
     // Initialize VU ballistics arrays
     this.vuPower = Array(channels).fill(1e-10);
     this.peakHold = Array(channels).fill(0);
+    this.initializeStageState(channels);
 
-    // Initialize per-stage metering accumulators: [channel][slot] where slot=0:input, slot=1:output
-    for (const id of ALL_STAGE_IDS) {
-      this.stageLevels.set(id, {
-        vuPower: Array.from({ length: channels }, () => [1e-10, 1e-10]),
-        peakHold: Array.from({ length: channels }, () => [0, 0]),
-      });
-      if (!this.stageGainLin.has(id)) {
-        this.stageGainLin.set(id, 1.0);
-      }
-    }
-
-    for (const id of ['inputXfmr', 'recordAmp', 'hysteresis', 'playbackAmp', 'outputXfmr'] as StageId[]) {
-      this.stageSaturation.set(id, Array(channels).fill(0));
-    }
-
+    const osBlockSize = this.renderBlockSize * Math.max(1, osFactor);
     for (let ch = 0; ch < channels; ch++) {
-      const inputXfmr = new TransformerModel(fs * osFactor, preset.inputTransformer);
-      const recordAmp = this.buildAmplifier(preset.ampType, preset.recordAmpDrive);
-      const recordEQ = this.buildEq(preset.eqStandard, 'record');
-      const biasContour = new BiasContour(fs * osFactor, this.tapeSpeed, preset.biasDefault);
-      biasContour.setBias(preset.biasDefault);
-      const wavelengthContour = new WavelengthContour(fs * osFactor, this.tapeSpeed, preset.headGapWidth);
-
-      const hysteresis = new HysteresisProcessor(fs * osFactor);
-      hysteresis.setDrive(preset.drive);
-      hysteresis.setSaturation(preset.saturation);
-      
-      const formulaName = this.currentFormula ?? preset.defaultFormula;
-      const f = FORMULAS[formulaName] ?? FORMULAS['456'];
-      hysteresis.setK(f.k);
-      hysteresis.setBaseC(f.c);
-      hysteresis.setAlpha(f.alpha);
-      wavelengthContour.setDrive(preset.drive);
-      wavelengthContour.setSaturation(preset.saturation);
-      wavelengthContour.setCoercivity(f.k);
-
-      const recordOversampler = new Oversampler(osFactor, this.renderBlockSize);
-      const head = new HeadModel(fs, this.tapeSpeed, {
-        gapWidth: preset.headGapWidth,
-        spacing: preset.headSpacing,
-        bumpGainDb: preset.bumpGainDb,
-      }, ch);
-      const azimuth = new AzimuthModel(fs, ch, this.tapeSpeed, preset.trackSpacing);
-      azimuth.setAzimuth(preset.azimuthDefault);
-      const playbackOversampler = new Oversampler(osFactor, this.renderBlockSize);
-      const playbackAmp = this.buildAmplifier(preset.ampType, preset.playbackAmpDrive);
-      const playbackEQ = this.buildEq(preset.eqStandard, 'playback');
-      const outputXfmr = new TransformerModel(fs * osFactor, preset.outputTransformer);
-
-      const transport = new TransportModel(fs, ch);
-      transport.setWow(preset.wowDefault);
-      transport.setFlutter(preset.flutterDefault);
-
-      const noise = new TapeNoise(fs, ch);
-      noise.setLevel(preset.hissDefault);
-
-      this.channels.push({
-        inputXfmr,
-        recordAmp,
-        recordEQ,
-        biasContour,
-        wavelengthContour,
-        hysteresis,
-        recordOversampler,
-        head,
-        azimuth,
-        playbackOversampler,
-        playbackAmp,
-        playbackEQ,
-        outputXfmr,
-        transport,
-        noise,
-      });
-
-      // Scratch buffers sized to current oversampling factor (supports offline 16x).
-      const osBlockSize = this.renderBlockSize * Math.max(1, osFactor);
+      this.channels.push(this.createChannelDSP(ch, preset, fs, osFactor));
       this.sagBlocks.push(new Float64Array(osBlockSize));
       this.pbIpBlocks.push(new Float64Array(osBlockSize));
       this.tapeBlocks.push(new Float32Array(this.renderBlockSize));
@@ -614,9 +716,7 @@ class TapeProcessor extends AudioWorkletProcessor {
     this.crosstalkInput = this.tapeBlocks.slice(0, channels);
 
     // Initialize crossfade state to match current bypass settings
-    for (const id of ALL_STAGE_IDS) {
-      this.stageFade.set(id, (this.stageBypassed.get(id) ?? false) ? 0 : 1);
-    }
+    this.initializeStageFades();
     this.smoothedBias = Array(channels).fill(preset.biasDefault);
     this.delayedIg = Array(channels).fill(0);
     this.delayedTapeSat = Array(channels).fill(0);
@@ -629,6 +729,159 @@ class TapeProcessor extends AudioWorkletProcessor {
 
     // Re-apply specific stage parameter overrides
     this.reapplyStageParamOverrides();
+  }
+
+  private resetDebugStats(): void {
+    this._dbgOverruns = 0;
+    this._dbgNanAmp = 0;
+    this._dbgNanHyst = 0;
+    this._dbgOutSum[0] = 0; this._dbgOutSum[1] = 0;
+    this._dbgOutSumSq[0] = 0; this._dbgOutSumSq[1] = 0;
+    this._dbgOutPeak[0] = 0; this._dbgOutPeak[1] = 0;
+    this._dbgOutCount[0] = 0; this._dbgOutCount[1] = 0;
+    this._dbgClampHits[0] = 0; this._dbgClampHits[1] = 0;
+    this._dbgOutNonFinite[0] = 0; this._dbgOutNonFinite[1] = 0;
+    this._dbgMaxProcessMs = 0;
+    this._dbgTotalMs = 0;
+    this._dbgRecordMs = 0;
+    this._dbgPlaybackMs = 0;
+    this._dbgFrameCount = 0;
+  }
+
+  private maybePostDebugStats(blockSize: number, elapsedMs: number): void {
+    const budgetMs = (blockSize / sampleRate) * 1000;
+    this._dbgFrameCount++;
+    this._dbgSampleCount += blockSize;
+    this._dbgTotalMs += elapsedMs;
+    if (elapsedMs > budgetMs) this._dbgOverruns++;
+    if (elapsedMs > this._dbgMaxProcessMs) this._dbgMaxProcessMs = elapsedMs;
+
+    if (this._dbgSampleCount < sampleRate) {
+      return;
+    }
+
+    const frames = this._dbgFrameCount;
+    const outRms: number[] = [];
+    const outDc: number[] = [];
+    const outPeak: number[] = [];
+    const outClampHits: number[] = [];
+    const outNonFinite: number[] = [];
+
+    for (let ch = 0; ch < 2; ch++) {
+      const count = this._dbgOutCount[ch];
+      const rms = count > 0 ? Math.sqrt(this._dbgOutSumSq[ch] / count) : 0;
+      const dc = count > 0 ? (this._dbgOutSum[ch] / count) : 0;
+      outRms.push(+rms.toFixed(6));
+      outDc.push(+dc.toFixed(6));
+      outPeak.push(+this._dbgOutPeak[ch].toFixed(6));
+      outClampHits.push(this._dbgClampHits[ch] | 0);
+      outNonFinite.push(this._dbgOutNonFinite[ch] | 0);
+    }
+
+    const lrImbalanceDb = (outRms[0] > 0 || outRms[1] > 0)
+      ? +(20 * Math.log10((outRms[0] + 1e-12) / (outRms[1] + 1e-12))).toFixed(4)
+      : 0;
+
+    this.port.postMessage({
+      type: 'debug-stats',
+      timerSource: _timerSource,
+      overrunsPerSec: this._dbgOverruns,
+      nanAmpCount: this._dbgNanAmp,
+      nanHystCount: this._dbgNanHyst,
+      outRms,
+      outDc,
+      outPeak,
+      outClampHits,
+      outNonFinite,
+      lrImbalanceDb,
+      maxProcessMs: +this._dbgMaxProcessMs.toFixed(4),
+      avgProcessMs: +(this._dbgTotalMs / frames).toFixed(4),
+      avgRecordMs: +(this._dbgRecordMs / frames).toFixed(4),
+      avgPlaybackMs: +(this._dbgPlaybackMs / frames).toFixed(4),
+      budgetMs: +budgetMs.toFixed(4),
+    });
+
+    this.resetDebugStats();
+    this._dbgSampleCount -= sampleRate;
+  }
+
+  private buildStageMeterSnapshots(numChannels: number): Record<string, StageMeterSnapshot> {
+    const levels: Record<string, StageMeterSnapshot> = {};
+
+    for (const id of ALL_STAGE_IDS) {
+      const stageLevels = this.stageLevels.get(id)!;
+      const vuDb: number[] = [];
+      const peakDb: number[] = [];
+
+      for (let slot = 0; slot < 2; slot++) {
+        let maxPower = 1e-10;
+        let maxPeak = 0;
+        for (let channel = 0; channel < numChannels; channel++) {
+          maxPower = Math.max(maxPower, stageLevels.vuPower[channel][slot]);
+          maxPeak = Math.max(maxPeak, stageLevels.peakHold[channel][slot]);
+        }
+        vuDb.push(Math.max(-60, Math.min(9, 10 * Math.log10(maxPower))));
+        peakDb.push(Math.max(-60, Math.min(9, maxPeak > 0 ? 20 * Math.log10(maxPeak) : -60)));
+      }
+
+      levels[id] = { vuDb, peakDb };
+      const saturation = this.stageSaturation.get(id);
+      if (saturation !== undefined) {
+        let maxSaturation = 0;
+        for (let channel = 0; channel < saturation.length; channel++) {
+          maxSaturation = Math.max(maxSaturation, saturation[channel]);
+        }
+        levels[id].saturation = maxSaturation;
+      }
+    }
+
+    return levels;
+  }
+
+  private maybePostMeters(numChannels: number, blockSize: number): void {
+    this.meterFrame += blockSize;
+    if (this.meterFrame < this.nextMeterFrame) {
+      return;
+    }
+    this.meterFrame -= this.nextMeterFrame;
+
+    const vuDb: number[] = [];
+    const peakDb: number[] = [];
+    for (let ch = 0; ch < numChannels; ch++) {
+      const vu = 10 * Math.log10(Math.max(this.vuPower[ch], 1e-10));
+      vuDb.push(Math.max(-20, Math.min(9, vu)));
+      const pk = this.peakHold[ch] > 0 ? 20 * Math.log10(this.peakHold[ch]) : -20;
+      peakDb.push(Math.max(-20, Math.min(9, pk)));
+    }
+
+    this.port.postMessage({
+      type: 'meters',
+      vuDb,
+      peakDb,
+    });
+
+    this.port.postMessage({
+      type: 'stage-meters',
+      levels: this.buildStageMeterSnapshots(numChannels),
+    });
+  }
+
+  private maybePostRenderProgress(blockSize: number): void {
+    if (this.offlineTotalFrames <= 0) {
+      return;
+    }
+
+    this.offlineProcessedFrames += blockSize;
+    const progress = Math.min(1, this.offlineProcessedFrames / this.offlineTotalFrames);
+    if (progress < this.offlineLastProgress + 0.01 && progress < 1) {
+      return;
+    }
+
+    this.offlineLastProgress = progress;
+    this.port.postMessage({
+      type: 'render-progress',
+      progress: +progress.toFixed(4),
+    });
   }
 
   process(
@@ -1220,138 +1473,9 @@ class TapeProcessor extends AudioWorkletProcessor {
     this.stageFade.set('outputXfmr', fadeOutputXfmr);
     this.bypassFade = bypassFade;
 
-    // Debug diagnostics
-    const _elapsed = _perfNow() - _t0;
-    const _budget = (blockSize / sampleRate) * 1000;
-    this._dbgFrameCount++;
-    this._dbgSampleCount += blockSize;
-    this._dbgTotalMs += _elapsed;
-    if (_elapsed > _budget) this._dbgOverruns++;
-    if (_elapsed > this._dbgMaxProcessMs) this._dbgMaxProcessMs = _elapsed;
-
-    // Post debug stats roughly every second, independent of render quantum size.
-    if (this._dbgSampleCount >= sampleRate) {
-      const n = this._dbgFrameCount;
-      const outRms: number[] = [];
-      const outDc: number[] = [];
-      const outPeak: number[] = [];
-      const outClampHits: number[] = [];
-      const outNonFinite: number[] = [];
-      for (let ch = 0; ch < 2; ch++) {
-        const cnt = dbgOutCount[ch];
-        const rms = cnt > 0 ? Math.sqrt(dbgOutSumSq[ch] / cnt) : 0;
-        const dc = cnt > 0 ? (dbgOutSum[ch] / cnt) : 0;
-        outRms.push(+rms.toFixed(6));
-        outDc.push(+dc.toFixed(6));
-        outPeak.push(+dbgOutPeak[ch].toFixed(6));
-        outClampHits.push(dbgClampHits[ch] | 0);
-        outNonFinite.push(dbgOutNonFinite[ch] | 0);
-      }
-      const lrImbalanceDb = (outRms[0] > 0 || outRms[1] > 0)
-        ? +(20 * Math.log10((outRms[0] + 1e-12) / (outRms[1] + 1e-12))).toFixed(4)
-        : 0;
-
-      this.port.postMessage({
-        type: 'debug-stats',
-        timerSource: _timerSource,
-        overrunsPerSec: this._dbgOverruns,
-        nanAmpCount: this._dbgNanAmp,
-        nanHystCount: this._dbgNanHyst,
-        outRms,
-        outDc,
-        outPeak,
-        outClampHits,
-        outNonFinite,
-        lrImbalanceDb,
-        maxProcessMs: +this._dbgMaxProcessMs.toFixed(4),
-        avgProcessMs: +(this._dbgTotalMs / n).toFixed(4),
-        avgRecordMs: +(this._dbgRecordMs / n).toFixed(4),
-        avgPlaybackMs: +(this._dbgPlaybackMs / n).toFixed(4),
-        budgetMs: +_budget.toFixed(4),
-      });
-      this._dbgOverruns = 0;
-      this._dbgNanAmp = 0;
-      this._dbgNanHyst = 0;
-      this._dbgOutSum[0] = 0; this._dbgOutSum[1] = 0;
-      this._dbgOutSumSq[0] = 0; this._dbgOutSumSq[1] = 0;
-      this._dbgOutPeak[0] = 0; this._dbgOutPeak[1] = 0;
-      this._dbgOutCount[0] = 0; this._dbgOutCount[1] = 0;
-      this._dbgClampHits[0] = 0; this._dbgClampHits[1] = 0;
-      this._dbgOutNonFinite[0] = 0; this._dbgOutNonFinite[1] = 0;
-      this._dbgMaxProcessMs = 0;
-      this._dbgTotalMs = 0;
-      this._dbgRecordMs = 0;
-      this._dbgPlaybackMs = 0;
-      this._dbgFrameCount = 0;
-      this._dbgSampleCount -= sampleRate;
-    }
-
-    // Send meter data approximately every 50 ms
-    this.meterFrame += blockSize;
-    if (this.meterFrame >= this.nextMeterFrame) {
-      this.meterFrame -= this.nextMeterFrame;
-
-      const vuDb: number[] = [];
-      const peakDb: number[] = [];
-      for (let ch = 0; ch < numChannels; ch++) {
-        const vu = 10 * Math.log10(Math.max(this.vuPower[ch], 1e-10));
-        vuDb.push(Math.max(-20, Math.min(9, vu)));
-        const pk = this.peakHold[ch] > 0 ? 20 * Math.log10(this.peakHold[ch]) : -20;
-        peakDb.push(Math.max(-20, Math.min(9, pk)));
-      }
-
-      this.port.postMessage({
-        type: 'meters',
-        vuDb,
-        peakDb,
-      });
-
-      // Build per-stage meter data (max across channels per slot)
-      const levels: Record<string, { vuDb: number[]; peakDb: number[]; saturation?: number }> = {};
-      for (const id of ALL_STAGE_IDS) {
-        const sl = this.stageLevels.get(id)!;
-        const sVuDb: number[] = [];
-        const sPeakDb: number[] = [];
-        for (let slot = 0; slot < 2; slot++) {
-          let maxPower = 1e-10;
-          let maxPeak = 0;
-          for (let c = 0; c < numChannels; c++) {
-            maxPower = Math.max(maxPower, sl.vuPower[c][slot]);
-            maxPeak = Math.max(maxPeak, sl.peakHold[c][slot]);
-          }
-          const vu = 10 * Math.log10(maxPower);
-          sVuDb.push(Math.max(-60, Math.min(9, vu)));
-          const pk = maxPeak > 0 ? 20 * Math.log10(maxPeak) : -60;
-          sPeakDb.push(Math.max(-60, Math.min(9, pk)));
-        }
-        levels[id] = { vuDb: sVuDb, peakDb: sPeakDb };
-        const sat = this.stageSaturation.get(id);
-        if (sat !== undefined) {
-          let maxSat = 0;
-          for (let c = 0; c < sat.length; c++) {
-            maxSat = Math.max(maxSat, sat[c]);
-          }
-          levels[id].saturation = maxSat;
-        }
-      }
-
-      this.port.postMessage({
-        type: 'stage-meters',
-        levels,
-      });
-    }
-
-    if (this.offlineTotalFrames > 0) {
-      this.offlineProcessedFrames += blockSize;
-      const progress = Math.min(1, this.offlineProcessedFrames / this.offlineTotalFrames);
-      if (progress >= this.offlineLastProgress + 0.01 || progress >= 1) {
-        this.offlineLastProgress = progress;
-        this.port.postMessage({
-          type: 'render-progress',
-          progress: +progress.toFixed(4),
-        });
-      }
-    }
+    this.maybePostDebugStats(blockSize, _perfNow() - _t0);
+    this.maybePostMeters(numChannels, blockSize);
+    this.maybePostRenderProgress(blockSize);
 
     return this.alive;
   }
