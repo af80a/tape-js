@@ -108,6 +108,19 @@ export interface TubeCircuitParams {
   Vpp: number;     // plate supply voltage (volts)
 }
 
+interface AmplifierRuntimeState {
+  txBiasState: number;
+  x: [number, number, number, number];
+  i_nl_prev: [number, number];
+  saturationDepth: number;
+  sagVpp: number;
+  sagVscreen: number;
+  currentRload: number;
+  acPhase: number;
+  sagSampleCount: number;
+  sagIpAccum: number;
+}
+
 const DEFAULT_CIRCUIT: TubeCircuitParams = {
   Rp: 100e3, Rg: 1e6, Rk: 1.5e3,
   Cc_in: 22e-9, Cc_out: 100e-9, Ck: 25e-6,
@@ -255,6 +268,18 @@ export class AmplifierModel {
   }
 
   /**
+   * Predict grid current for the current sample without committing state.
+   * Used by same-sample coupling correctors in the worklet.
+   */
+  previewGridCurrent(input: number, externalIp = 0, Rload = 1e6): number {
+    const state = this.captureState();
+    this.process(input, externalIp, Rload);
+    const gridCurrent = this.getGridCurrent();
+    this.restoreState(state);
+    return gridCurrent;
+  }
+
+  /**
    * Override the screen voltage from an external source (shared power supply).
    * Lightweight per-sample call — no allocation, no state rebuild.
    */
@@ -294,6 +319,41 @@ export class AmplifierModel {
   /** Returns 0-1 saturation depth from the last processed sample. */
   getSaturationDepth(): number {
     return this._saturationDepth;
+  }
+
+  private captureState(): AmplifierRuntimeState {
+    return {
+      txBiasState: this.txBiasState,
+      x: [this.x[0], this.x[1], this.x[2], this.x[3]],
+      i_nl_prev: [this.i_nl_prev[0], this.i_nl_prev[1]],
+      saturationDepth: this._saturationDepth,
+      sagVpp: this._sagVpp,
+      sagVscreen: this.sagVscreen,
+      currentRload: this.currentRload,
+      acPhase: this.acPhase,
+      sagSampleCount: this.sagSampleCount,
+      sagIpAccum: this.sagIpAccum,
+    };
+  }
+
+  private restoreState(state: AmplifierRuntimeState): void {
+    this.txBiasState = state.txBiasState;
+    this.x[0] = state.x[0];
+    this.x[1] = state.x[1];
+    this.x[2] = state.x[2];
+    this.x[3] = state.x[3];
+    this.i_nl_prev[0] = state.i_nl_prev[0];
+    this.i_nl_prev[1] = state.i_nl_prev[1];
+    this._saturationDepth = state.saturationDepth;
+    this._sagVpp = state.sagVpp;
+    this.sagVscreen = state.sagVscreen;
+    this.currentRload = state.currentRload;
+    this.acPhase = state.acPhase;
+    this.sagSampleCount = state.sagSampleCount;
+    this.sagIpAccum = state.sagIpAccum;
+    if (this.mode === 'tube') {
+      this.initStateSpace();
+    }
   }
 
   // -------------------------------------------------------------------------

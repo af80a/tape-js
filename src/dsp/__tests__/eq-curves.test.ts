@@ -48,6 +48,56 @@ describe('TapeEQ', () => {
     });
   });
 
+  describe('30 ips mastering EQ', () => {
+    it('uses a much flatter low end than 15 ips NAB record EQ', () => {
+      const eq30 = new TapeEQ(sampleRate, 'NAB', 30, 'record');
+      const low30 = measurePeak(eq30, 50, sampleRate);
+      eq30.reset();
+      const mid30 = measurePeak(eq30, 1000, sampleRate);
+
+      const eq15 = new TapeEQ(sampleRate, 'NAB', 15, 'record');
+      const low15 = measurePeak(eq15, 50, sampleRate);
+      eq15.reset();
+      const mid15 = measurePeak(eq15, 1000, sampleRate);
+
+      const diff30Db = 20 * Math.log10(mid30 / low30);
+      const diff15Db = 20 * Math.log10(mid15 / low15);
+
+      expect(diff30Db).toBeLessThan(6);
+      expect(diff15Db).toBeGreaterThan(diff30Db + 10);
+    });
+
+    it('keeps NAB and IEC selections equivalent at 30 ips', () => {
+      const nab = new TapeEQ(sampleRate, 'NAB', 30, 'playback');
+      const iec = new TapeEQ(sampleRate, 'IEC', 30, 'playback');
+
+      const nab12k = measurePeak(nab, 12_000, sampleRate);
+      iec.reset();
+      const iec12k = measurePeak(iec, 12_000, sampleRate);
+
+      expect(Math.abs(20 * Math.log10(nab12k / iec12k))).toBeLessThan(0.1);
+    });
+
+    it('record color remains stable and audible at 30 ips', () => {
+      const dark = new TapeEQ(sampleRate, 'NAB', 30, 'record');
+      dark.setColor(-1);
+      const neutral = new TapeEQ(sampleRate, 'NAB', 30, 'record');
+      const bright = new TapeEQ(sampleRate, 'NAB', 30, 'record');
+      bright.setColor(1);
+
+      const dark10k = measurePeak(dark, 10_000, sampleRate);
+      const neutral10k = measurePeak(neutral, 10_000, sampleRate);
+      const bright10k = measurePeak(bright, 10_000, sampleRate);
+
+      expect(Number.isFinite(dark10k)).toBe(true);
+      expect(Number.isFinite(bright10k)).toBe(true);
+      expect(dark10k).toBeGreaterThan(1e-3);
+      expect(bright10k).toBeGreaterThan(1e-3);
+      expect(bright10k).toBeGreaterThan(dark10k);
+      expect(Math.abs(20 * Math.log10(bright10k / neutral10k))).toBeLessThan(12);
+    });
+  });
+
   describe('IEC mode', () => {
     it('produces no NaN for IEC 7.5 ips record', () => {
       const eq = new TapeEQ(sampleRate, 'IEC', 7.5, 'record');
@@ -123,7 +173,7 @@ describe('TapeEQ', () => {
      * Helper: measure gain of record+playback chain at a given frequency.
      * Returns gain in dB relative to unity.
      */
-    function measureChainGainDb(standard: 'NAB' | 'IEC', speed: 15 | 7.5 | 3.75, freq: number): number {
+    function measureChainGainDb(standard: 'NAB' | 'IEC', speed: 30 | 15 | 7.5 | 3.75, freq: number): number {
       const recEq = new TapeEQ(sampleRate, standard, speed, 'record');
       const pbEq = new TapeEQ(sampleRate, standard, speed, 'playback');
       const numSamples = 6000;
@@ -154,6 +204,15 @@ describe('TapeEQ', () => {
 
       for (const freq of testFreqs) {
         const gainDb = measureChainGainDb('IEC', 15, freq);
+        expect(Math.abs(gainDb)).toBeLessThan(0.5);
+      }
+    });
+
+    it('30 ips record + playback is flat within 0.5 dB across the mastering band', () => {
+      const testFreqs = [100, 500, 1000, 3000, 8000, 12000, 16000];
+
+      for (const freq of testFreqs) {
+        const gainDb = measureChainGainDb('NAB', 30, freq);
         expect(Math.abs(gainDb)).toBeLessThan(0.5);
       }
     });

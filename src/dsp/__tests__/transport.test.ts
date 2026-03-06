@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { TransportModel } from '../transport';
+import { PRESETS } from '../presets';
 
 describe('TransportModel', () => {
   const fs = 44100;
@@ -281,14 +282,38 @@ describe('TransportModel', () => {
       expect(peakDev).toBeLessThan(0.003); // 0.2% + measurement margin
     });
 
-    it('Studer defaults (wow=0.10, flutter=0.08) produce ≤ 0.06% combined', () => {
+    it('Studer defaults stay within the published pro-machine wow/flutter envelope', () => {
       const model = new TransportModel(fs);
-      model.setWow(0.10);
-      model.setFlutter(0.08);
+      model.setWow(PRESETS.studer.wowDefault);
+      model.setFlutter(PRESETS.studer.flutterDefault);
 
-      // With both active, peak deviation should match professional machine spec
+      // Studer A810 brochures/spec sheets quote max wow/flutter around 0.04-0.05%
+      // at 15 ips (NAB/DIN weighted depending publication). The model is unweighted,
+      // so allow a small margin above the published weighted number.
       const peakDev = measurePeakDeviation(model, 3);
-      expect(peakDev).toBeLessThan(0.001); // 0.06% + margin → < 0.1%
+      expect(peakDev).toBeLessThan(0.001);
+    });
+
+    it('Ampex defaults stay within the published ATR-102 wow/flutter envelope', () => {
+      const model = new TransportModel(fs);
+      model.setWow(PRESETS.ampex.wowDefault);
+      model.setFlutter(PRESETS.ampex.flutterDefault);
+
+      // ATR-102 literature and derivative emulations consistently describe the
+      // deck as an ultra-stable mastering machine around 0.04% weighted at 15 ips.
+      const peakDev = measurePeakDeviation(model, 3);
+      expect(peakDev).toBeLessThan(0.0008);
+    });
+
+    it('MCI defaults stay within the published JH-24 wow/flutter envelope', () => {
+      const model = new TransportModel(fs);
+      model.setWow(PRESETS.mci.wowDefault);
+      model.setFlutter(PRESETS.mci.flutterDefault);
+
+      // Historical JH-24 spec sheets quote roughly 0.04% weighted wow/flutter.
+      // The model is intentionally slightly conservative on the unweighted side.
+      const peakDev = measurePeakDeviation(model, 3);
+      expect(peakDev).toBeLessThan(0.0008);
     });
 
     it('still produces valid output with noise modulation', () => {

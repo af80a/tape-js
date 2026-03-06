@@ -34,6 +34,7 @@ export interface MachinePreset {
   wowDefault: number;
   flutterDefault: number;
   hissDefault: number;
+  outputCalibrationGain: number;
 }
 
 export const FORMULAS: Record<string, TapeFormulation> = {
@@ -55,11 +56,11 @@ export const PRESETS: Record<string, MachinePreset> = {
       Cc_in: 22e-9, Cc_out: 100e-9, Ck: 25e-6, Vpp: 250,
     },
     defaultFormula: '900',
-    drive: 0.4,
-    saturation: 0.5,
-    recordAmpDrive: 0.5,
-    playbackAmpDrive: 0.4,
-    biasDefault: 0.5,
+    drive: 0.25,
+    saturation: 0.35,
+    recordAmpDrive: 0.18,
+    playbackAmpDrive: 0.14,
+    biasDefault: 0.75,
     bumpGainDb: 2.5,
     headGapWidth: 1.5e-6,  // narrow gap, extended HF
     headSpacing: 0.5e-6,   // well-maintained, tight contact
@@ -68,6 +69,7 @@ export const PRESETS: Record<string, MachinePreset> = {
     wowDefault: 0.1,
     flutterDefault: 0.08,
     hissDefault: 0.03,
+    outputCalibrationGain: 18.3,
   },
   ampex: {
     name: 'Ampex ATR-102',
@@ -81,11 +83,11 @@ export const PRESETS: Record<string, MachinePreset> = {
       Cc_in: 47e-9, Cc_out: 220e-9, Ck: 22e-6, Vpp: 300,
     },
     defaultFormula: '456',
-    drive: 0.5,
-    saturation: 0.6,
-    recordAmpDrive: 0.6,
-    playbackAmpDrive: 0.45,
-    biasDefault: 0.55,
+    drive: 0.35,
+    saturation: 0.45,
+    recordAmpDrive: 0.2,
+    playbackAmpDrive: 0.16,
+    biasDefault: 0.75,
     bumpGainDb: 3.5,
     headGapWidth: 2.0e-6,  // standard mastering head
     headSpacing: 0.8e-6,   // warm vintage character
@@ -94,6 +96,7 @@ export const PRESETS: Record<string, MachinePreset> = {
     wowDefault: 0.12,
     flutterDefault: 0.06,
     hissDefault: 0.04,
+    outputCalibrationGain: 7.4,
   },
   mci: {
     name: 'MCI JH-24',
@@ -103,18 +106,19 @@ export const PRESETS: Record<string, MachinePreset> = {
     inputTransformer: { lfCutoff: 22, hfResonance: 18000, hfQ: 0.9, satAmount: 1.1, asymmetry: 0.025 },
     outputTransformer: { lfCutoff: 20, hfResonance: 17000, hfQ: 0.8, satAmount: 0.9, asymmetry: 0.025 },
     defaultFormula: '499',
-    drive: 0.55,
-    saturation: 0.55,
-    recordAmpDrive: 0.55,
-    playbackAmpDrive: 0.4,
-    biasDefault: 0.48,
+    drive: 0.45,
+    saturation: 0.5,
+    recordAmpDrive: 0.28,
+    playbackAmpDrive: 0.22,
+    biasDefault: 0.65,
     bumpGainDb: 2.0,
     headGapWidth: 4.0e-6,  // wider gap, 24-track narrow tracks
     headSpacing: 1.2e-6,   // multitrack, more wear
     trackSpacing: 2.13e-3, // 2" 24-track: 43 mil track + 41 mil guard = 84 mil c-c
     azimuthDefault: 2.0,   // 24-track head, harder to align precisely
-    wowDefault: 0.15,
-    flutterDefault: 0.1,
+    wowDefault: 0.12,
+    flutterDefault: 0.08,
     hissDefault: 0.05,
+    outputCalibrationGain: 35.4,
   },
 };

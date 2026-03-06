@@ -24,6 +24,9 @@ const TWO_PI = 2 * Math.PI;
 //   Studer A810 at 15 ips: ≤0.05% combined (DIN weighted)
 //   Ampex ATR-102 at 15 ips: ≤0.04% combined (NAB)
 //   MCI JH-24 at 15 ips: ≤0.04% combined (DIN weighted)
+// The model is calibrated in fractional speed deviation, so the same constants
+// remain valid at 30 ips as well; nominal tape speed changes the EQ/head path
+// more than it changes the underlying wow/flutter percentage metric.
 // At depth=1.0: 0.5% wow / 0.2% flutter = clearly audible, lo-fi territory.
 const WOW_MAX_DEVIATION = 0.005;
 const FLUTTER_MAX_DEVIATION = 0.002;

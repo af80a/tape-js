@@ -6,6 +6,8 @@
  */
 
 import { HysteresisProcessor } from '../dsp/hysteresis';
+import { BiasContour } from '../dsp/bias-contour';
+import { WavelengthContour } from '../dsp/wavelength-contour';
 import { TransformerModel } from '../dsp/transformer';
 import { AmplifierModel } from '../dsp/amplifier';
 import { TapeEQ } from '../dsp/eq-curves';
@@ -60,8 +62,12 @@ const ALL_STAGE_IDS: StageId[] = [
 type AmpType = 'tube' | 'transistor';
 type EQStandard = 'NAB' | 'IEC';
 type VariantStageId = 'recordAmp' | 'playbackAmp' | 'recordEQ' | 'playbackEQ';
+type RecordCouplingMode = 'delayed' | 'predictor';
 
-const VALID_TAPE_SPEEDS: readonly TapeSpeed[] = [15, 7.5, 3.75];
+const VALID_TAPE_SPEEDS: readonly TapeSpeed[] = [30, 15, 7.5, 3.75];
+const MIN_COUPLING_AMOUNT = 0.25;
+const MAX_COUPLING_AMOUNT = 3.0;
+const COUPLING_LEVEL_MATCH_EXPONENT = 0.7;
 
 // ---------------------------------------------------------------------------
 // Per-channel DSP state
@@ -71,6 +77,8 @@ interface ChannelDSP {
   inputXfmr: TransformerModel;
   recordAmp: AmplifierModel;
   recordEQ: TapeEQ;
+  biasContour: BiasContour;
+  wavelengthContour: WavelengthContour;
   hysteresis: HysteresisProcessor;
   recordOversampler: Oversampler;
   head: HeadModel;
@@ -160,6 +168,8 @@ class TapeProcessor extends AudioWorkletProcessor {
   private oversampleFactor: number;
   private tapeSpeed: TapeSpeed;
   private currentPreset: MachinePreset;
+  private couplingAmount: number;
+  private recordCouplingMode: RecordCouplingMode;
 
   // Track global overrides that should survive oversampling changes
   private currentFormula: string | null = null;
@@ -210,6 +220,8 @@ class TapeProcessor extends AudioWorkletProcessor {
     this.currentPreset = this.resolvePreset(opts.preset);
     this.oversampleFactor = this.normalizeOversampleFactor(opts.oversample);
     this.tapeSpeed = this.normalizeTapeSpeed(opts.tapeSpeed);
+    this.couplingAmount = this.normalizeCouplingAmount(opts.couplingAmount);
+    this.recordCouplingMode = this.normalizeRecordCouplingMode(opts.recordCouplingMode);
     this.offlineTotalFrames = Math.max(0, (opts.totalFrames as number) ?? 0);
 
     // Compute VU ballistics coefficients
@@ -241,6 +253,8 @@ class TapeProcessor extends AudioWorkletProcessor {
           this.tapeSpeed = speed;
           for (const dsp of this.channels) {
             dsp.recordEQ.setSpeed(speed);
+            dsp.biasContour.setSpeed(speed);
+            dsp.wavelengthContour.setSpeed(speed);
             dsp.playbackEQ.setSpeed(speed);
             dsp.head.setSpeed(speed);
             dsp.azimuth.setSpeed(speed);
@@ -250,6 +264,12 @@ class TapeProcessor extends AudioWorkletProcessor {
         case 'set-oversample':
           this.oversampleFactor = this.normalizeOversampleFactor(data.value);
           this.initDSP(2, this.currentPreset, this.oversampleFactor, this.tapeSpeed);
+          break;
+        case 'set-coupling-amount':
+          this.couplingAmount = this.normalizeCouplingAmount(data.value);
+          break;
+        case 'set-record-coupling-mode':
+          this.recordCouplingMode = this.normalizeRecordCouplingMode(data.value);
           break;
         case 'set-formula':
           if (typeof data.value === 'string' && FORMULAS[data.value]) {
@@ -320,6 +340,15 @@ class TapeProcessor extends AudioWorkletProcessor {
     return (VALID_TAPE_SPEEDS as readonly number[]).includes(speed) ? (speed as TapeSpeed) : 15;
   }
 
+  private normalizeCouplingAmount(value: unknown): number {
+    const raw = typeof value === 'number' && Number.isFinite(value) ? value : 1;
+    return Math.max(MIN_COUPLING_AMOUNT, Math.min(MAX_COUPLING_AMOUNT, raw));
+  }
+
+  private normalizeRecordCouplingMode(value: unknown): RecordCouplingMode {
+    return value === 'predictor' ? 'predictor' : 'delayed';
+  }
+
   private clearStageOverrides(): void {
     this.stageParamOverrides.clear();
     for (const id of ALL_STAGE_IDS) {
@@ -368,6 +397,7 @@ class TapeProcessor extends AudioWorkletProcessor {
       dsp.hysteresis.setK(f.k);
       dsp.hysteresis.setBaseC(f.c);
       dsp.hysteresis.setAlpha(f.alpha);
+      dsp.wavelengthContour.setCoercivity(f.k);
     }
   }
 
@@ -436,6 +466,7 @@ class TapeProcessor extends AudioWorkletProcessor {
           if (param === 'level') {
             // Bias is applied parametrically to the hysteresis model.
             dsp.hysteresis.setBias(value);
+            dsp.biasContour.setBias(value);
           } else if (param === 'frequency') {
             // Legacy no-op: additive bias oscillator path was removed.
           }
@@ -519,6 +550,9 @@ class TapeProcessor extends AudioWorkletProcessor {
       const inputXfmr = new TransformerModel(fs * osFactor, preset.inputTransformer);
       const recordAmp = this.buildAmplifier(preset.ampType, preset.recordAmpDrive);
       const recordEQ = this.buildEq(preset.eqStandard, 'record');
+      const biasContour = new BiasContour(fs * osFactor, this.tapeSpeed, preset.biasDefault);
+      biasContour.setBias(preset.biasDefault);
+      const wavelengthContour = new WavelengthContour(fs * osFactor, this.tapeSpeed, preset.headGapWidth);
 
       const hysteresis = new HysteresisProcessor(fs * osFactor);
       hysteresis.setDrive(preset.drive);
@@ -529,6 +563,9 @@ class TapeProcessor extends AudioWorkletProcessor {
       hysteresis.setK(f.k);
       hysteresis.setBaseC(f.c);
       hysteresis.setAlpha(f.alpha);
+      wavelengthContour.setDrive(preset.drive);
+      wavelengthContour.setSaturation(preset.saturation);
+      wavelengthContour.setCoercivity(f.k);
 
       const recordOversampler = new Oversampler(osFactor, this.renderBlockSize);
       const head = new HeadModel(fs, this.tapeSpeed, {
@@ -554,6 +591,8 @@ class TapeProcessor extends AudioWorkletProcessor {
         inputXfmr,
         recordAmp,
         recordEQ,
+        biasContour,
+        wavelengthContour,
         hysteresis,
         recordOversampler,
         head,
@@ -578,7 +617,7 @@ class TapeProcessor extends AudioWorkletProcessor {
     for (const id of ALL_STAGE_IDS) {
       this.stageFade.set(id, (this.stageBypassed.get(id) ?? false) ? 0 : 1);
     }
-    this.smoothedBias = Array(channels).fill(0.5);
+    this.smoothedBias = Array(channels).fill(preset.biasDefault);
     this.delayedIg = Array(channels).fill(0);
     this.delayedTapeSat = Array(channels).fill(0);
     this.delayedPbIg = Array(channels).fill(0);
@@ -670,6 +709,7 @@ class TapeProcessor extends AudioWorkletProcessor {
     const trimInputXfmr = this.stageGainLin.get('inputXfmr') ?? 1.0;
     const trimRecordAmp = this.stageGainLin.get('recordAmp') ?? 1.0;
     const trimRecordEQ = this.stageGainLin.get('recordEQ') ?? 1.0;
+    const trimBias = this.stageGainLin.get('bias') ?? 1.0;
     const trimHysteresis = this.stageGainLin.get('hysteresis') ?? 1.0;
     const trimHead = this.stageGainLin.get('head') ?? 1.0;
     const trimTransport = this.stageGainLin.get('transport') ?? 1.0;
@@ -727,6 +767,7 @@ class TapeProcessor extends AudioWorkletProcessor {
     let fadeInputXfmr = this.stageFade.get('inputXfmr') ?? (bypassInputXfmr ? 0 : 1);
     let fadeRecordAmp = this.stageFade.get('recordAmp') ?? (bypassRecordAmp ? 0 : 1);
     let fadeRecordEQ = this.stageFade.get('recordEQ') ?? (bypassRecordEQ ? 0 : 1);
+    let fadeBias = this.stageFade.get('bias') ?? (bypassBias ? 0 : 1);
     let fadeHysteresis = this.stageFade.get('hysteresis') ?? (bypassHysteresis ? 0 : 1);
     let fadeHead = this.stageFade.get('head') ?? (bypassHead ? 0 : 1);
     let fadeTransport = this.stageFade.get('transport') ?? (bypassTransport ? 0 : 1);
@@ -740,6 +781,7 @@ class TapeProcessor extends AudioWorkletProcessor {
     const initFadeInputXfmr = fadeInputXfmr;
     const initFadeRecordAmp = fadeRecordAmp;
     const initFadeRecordEQ = fadeRecordEQ;
+    const initFadeBias = fadeBias;
     const initFadeHysteresis = fadeHysteresis;
     const initFadeHead = fadeHead;
     const initFadeTransport = fadeTransport;
@@ -778,6 +820,13 @@ class TapeProcessor extends AudioWorkletProcessor {
     const dbgOutCount = this._dbgOutCount;
     const dbgClampHits = this._dbgClampHits;
     const dbgOutNonFinite = this._dbgOutNonFinite;
+    const usePredictorCoupling = this.recordCouplingMode === 'predictor';
+    const couplingAmount = this.couplingAmount;
+    const presetOutputCalibrationGain = this.currentPreset.outputCalibrationGain;
+    // Dev audition helper: keep coupling sweeps closer in loudness so the
+    // listener can judge interaction character rather than obvious gain loss.
+    // This is intentionally a static output makeup, not part of the physical model.
+    const couplingMakeup = Math.pow(couplingAmount, COUPLING_LEVEL_MATCH_EXPONENT);
 
     const _tRecord = _perfNow();
     for (let ch = 0; ch < numChannels; ch++) {
@@ -789,6 +838,7 @@ class TapeProcessor extends AudioWorkletProcessor {
         fadeInputXfmr = initFadeInputXfmr;
         fadeRecordAmp = initFadeRecordAmp;
         fadeRecordEQ = initFadeRecordEQ;
+        fadeBias = initFadeBias;
         fadeHysteresis = initFadeHysteresis;
       }
 
@@ -802,6 +852,8 @@ class TapeProcessor extends AudioWorkletProcessor {
       // on the tape magnetization process.
       dsp.hysteresis.setDrive(ovHystDrive ?? drive);
       dsp.hysteresis.setSaturation(ovHystSat ?? saturation);
+      dsp.wavelengthContour.setDrive(ovHystDrive ?? drive);
+      dsp.wavelengthContour.setSaturation(ovHystSat ?? saturation);
       dsp.recordAmp.setDrive(ovRecordAmpDrive ?? ampDrive);
       dsp.recordEQ.setColor(ovRecordEQColor ?? color);
       dsp.playbackAmp.setDrive(ovPlaybackAmpDrive ?? ampDrive * 0.8);
@@ -822,30 +874,43 @@ class TapeProcessor extends AudioWorkletProcessor {
       const recOsLen = blockSize * factor;
       const ooF = 1 / factor;
 
-      let p0 = 0, k0 = 0, p1 = 0, k1 = 0, p2 = 0, k2 = 0, p3 = 0, k3 = 0;
+      let p0 = 0, k0 = 0, p1 = 0, k1 = 0, p2 = 0, k2 = 0, pBias = 0, kBias = 0, p3 = 0, k3 = 0;
       let maxSatInputXfmr = 0, maxSatRecordAmp = 0, maxSatHysteresis = 0;
 
       // Tape impedance loading responds to the saturation envelope, not individual
       // audio cycles. Fixed per block (2.67ms at 48kHz) — saturation level barely
       // changes within one block, so this is physically equivalent to per-sample.
       // Avoids 512 initStateSpace() calls/block for tube amps at 8x OS.
-      const targetRload = 1e6 * (1.0 - delayedTapeSat[ch] * 0.99) + 10000;
+      const effectiveTapeSat = Math.min(1, delayedTapeSat[ch] * couplingAmount);
+      const targetRload = 1e6 * (1.0 - effectiveTapeSat * 0.99) + 10000;
 
       for (let j = 0; j < recOsLen; j++) {
         // Bias smoothing at base-rate boundaries
         if (j % factor === 0) {
           smoothedBias[ch] += (targetBias - smoothedBias[ch]) * (1 - biasSmoothCoeff);
           dsp.hysteresis.setBias(smoothedBias[ch]);
+          dsp.biasContour.setBias(smoothedBias[ch]);
         }
 
         let v = recUpsampled[j];
 
-        // inputXfmr → tube grid current loads the transformer (1-sample delayed)
+        // inputXfmr → recordAmp grid current loads the transformer output.
+        // Default path uses the previous sample's smoothed grid current to keep
+        // the inter-stage loop causal. Predictor mode estimates same-sample Ig
+        // with a side-effect-free amp preview, then applies one correction pass.
         const dryXfmr = v;
-        v = dsp.inputXfmr.process(v) * trimInputXfmr;
-        v -= delayedIg[ch] * TapeProcessor.XFMR_Z_OUT;
+        const unloadedXfmr = dsp.inputXfmr.process(v) * trimInputXfmr;
+        let xfmrOut = unloadedXfmr;
+        if (usePredictorCoupling) {
+          const predictedIg = dsp.recordAmp.previewGridCurrent(unloadedXfmr, this.pbIpBlocks[ch][j], targetRload);
+          if (Number.isFinite(predictedIg)) {
+            xfmrOut -= Math.max(0, predictedIg) * TapeProcessor.XFMR_Z_OUT * couplingAmount;
+          }
+        } else {
+          xfmrOut -= delayedIg[ch] * TapeProcessor.XFMR_Z_OUT * couplingAmount;
+        }
         maxSatInputXfmr = Math.max(maxSatInputXfmr, dsp.inputXfmr.getSaturationDepth());
-        v = dryXfmr + (v - dryXfmr) * fadeInputXfmr;
+        v = dryXfmr + (xfmrOut - dryXfmr) * fadeInputXfmr;
         p0 += v * v; k0 = Math.max(k0, Math.abs(v));
 
         // recordAmp → tape saturation loads the amp output (1-sample delayed)
@@ -870,8 +935,14 @@ class TapeProcessor extends AudioWorkletProcessor {
         v = dryReq + (v - dryReq) * fadeRecordEQ;
         p2 += v * v; k2 = Math.max(k2, Math.abs(v));
 
+        const dryBias = v;
+        v = dsp.biasContour.process(v) * trimBias;
+        v = dryBias + (v - dryBias) * fadeBias;
+        pBias += v * v; kBias = Math.max(kBias, Math.abs(v));
+
         // hysteresis → update delayed tape saturation for next sample's amp loading
         const dryHyst = v;
+        v = dsp.wavelengthContour.process(v);
         v = dsp.hysteresis.process(v) * trimHysteresis;
         if (!Number.isFinite(v)) { this._dbgNanHyst++; v = 0; }
         const satH = dsp.hysteresis.getSaturationDepth();
@@ -892,7 +963,9 @@ class TapeProcessor extends AudioWorkletProcessor {
           updateStageMeterPwr(slRecordAmp,  ch, 1, p1 * ooF, k1);
           updateStageMeterPwr(slRecordEQ,   ch, 0, p1 * ooF, k1);
           updateStageMeterPwr(slRecordEQ,   ch, 1, p2 * ooF, k2);
-          updateStageMeterPwr(slHysteresis, ch, 0, p2 * ooF, k2);
+          updateStageMeterPwr(slBias,       ch, 0, p2 * ooF, k2);
+          updateStageMeterPwr(slBias,       ch, 1, pBias * ooF, kBias);
+          updateStageMeterPwr(slHysteresis, ch, 0, pBias * ooF, kBias);
           updateStageMeterPwr(slHysteresis, ch, 1, p3 * ooF, k3);
 
           const msi = maxSatInputXfmr * fadeInputXfmr;
@@ -907,9 +980,10 @@ class TapeProcessor extends AudioWorkletProcessor {
           fadeInputXfmr = advanceFade(fadeInputXfmr, bypassInputXfmr);
           fadeRecordAmp = advanceFade(fadeRecordAmp, bypassRecordAmp);
           fadeRecordEQ = advanceFade(fadeRecordEQ, bypassRecordEQ);
+          fadeBias = advanceFade(fadeBias, bypassBias);
           fadeHysteresis = advanceFade(fadeHysteresis, bypassHysteresis);
 
-          p0 = 0; k0 = 0; p1 = 0; k1 = 0; p2 = 0; k2 = 0; p3 = 0; k3 = 0;
+          p0 = 0; k0 = 0; p1 = 0; k1 = 0; p2 = 0; k2 = 0; pBias = 0; kBias = 0; p3 = 0; k3 = 0;
           maxSatInputXfmr = 0; maxSatRecordAmp = 0; maxSatHysteresis = 0;
         }
       }
@@ -942,12 +1016,17 @@ class TapeProcessor extends AudioWorkletProcessor {
         bypassFade = initBypassFade;
       }
 
-      // ---- PHASE 2: BASE-RATE TAPE (head, transport, noise) ----
+      // ---- PHASE 2: BASE-RATE TAPE (noise, head, transport) ----
       for (let i = 0; i < blockSize; i++) {
         let x = tapeBlock[i];
 
-        updateStageMeter(slBias, ch, 0, x);
-        updateStageMeter(slBias, ch, 1, x);
+        // Tape noise belongs on the tape path, not after transport. Putting it
+        // here lets head loss, azimuth, and wow/flutter act on hiss as well.
+        updateStageMeter(slNoise, ch, 0, x);
+        const dryNoise = x;
+        x = (x + dsp.noise.process(Math.abs(x))) * trimNoise;
+        x = dryNoise + (x - dryNoise) * fadeNoise;
+        updateStageMeter(slNoise, ch, 1, x);
 
         updateStageMeter(slHead, ch, 0, x);
         const dryHead = x;
@@ -961,17 +1040,11 @@ class TapeProcessor extends AudioWorkletProcessor {
         x = dryTransport + (x - dryTransport) * fadeTransport;
         updateStageMeter(slTransport, ch, 1, x);
 
-        updateStageMeter(slNoise, ch, 0, x);
-        const dryNoise = x;
-        x = (x + dsp.noise.process(Math.abs(x))) * trimNoise;
-        x = dryNoise + (x - dryNoise) * fadeNoise;
-        updateStageMeter(slNoise, ch, 1, x);
-
         tapeBlock[i] = x;
 
+        fadeNoise = advanceFade(fadeNoise, bypassNoise);
         fadeHead = advanceFade(fadeHead, bypassHead);
         fadeTransport = advanceFade(fadeTransport, bypassTransport);
-        fadeNoise = advanceFade(fadeNoise, bypassNoise);
       }
 
       // ---- PHASE 3: PLAYBACK CHAIN (block oversampled) ----
@@ -987,7 +1060,8 @@ class TapeProcessor extends AudioWorkletProcessor {
       let maxSatPlaybackAmp = 0, maxSatOutputXfmr = 0;
 
       // Same reasoning: output transformer loading fixed per block.
-      const targetOxfmrRload = 1e6 * (1.0 - delayedOxfmrSat[ch] * 0.99) + 10000;
+      const effectiveOutputSat = Math.min(1, delayedOxfmrSat[ch] * couplingAmount);
+      const targetOxfmrRload = 1e6 * (1.0 - effectiveOutputSat * 0.99) + 10000;
 
       for (let j = 0; j < pbOsLen; j++) {
 
@@ -999,13 +1073,24 @@ class TapeProcessor extends AudioWorkletProcessor {
         v = dryPeq + (v - dryPeq) * fadePlaybackEQ;
         pb0 += v * v; pk0 = Math.max(pk0, Math.abs(v));
 
-        // Playback EQ → Playback Amp Grid loading (1-sample delayed)
-        // Grid current spikes from the amp drag down the EQ's output voltage
-        v -= delayedPbIg[ch] * TapeProcessor.HEAD_Z_OUT;
-
         // Shared power supply: record amp sag propagates to playback amp
         const sharedSagV = this.sagBlocks[ch][j];
         if (sharedSagV > 0) dsp.playbackAmp.setSagVoltage(sharedSagV);
+
+        // PlaybackEQ → playbackAmp grid current loads the repro chain output.
+        // Predictor mode mirrors the record-side corrector: estimate same-sample
+        // grid current against the current shared sag and block-held output
+        // transformer load, then apply one correction pass.
+        if (usePredictorCoupling) {
+          const predictedPbIg = dsp.playbackAmp.previewGridCurrent(v, 0, targetOxfmrRload);
+          if (Number.isFinite(predictedPbIg)) {
+            v -= Math.max(0, predictedPbIg) * TapeProcessor.HEAD_Z_OUT * couplingAmount;
+          }
+        } else {
+          // Playback EQ → Playback Amp Grid loading (1-sample delayed)
+          // Grid current spikes from the amp drag down the EQ's output voltage.
+          v -= delayedPbIg[ch] * TapeProcessor.HEAD_Z_OUT * couplingAmount;
+        }
 
         const dryPamp = v;
         // Playback Amp → Output Transformer loading (1-sample delayed)
@@ -1075,7 +1160,7 @@ class TapeProcessor extends AudioWorkletProcessor {
         if (clamped && ch < 2) dbgClampHits[ch]++;
 
         // x is at analog levels. Apply output gain.
-        const analogOut = x * outputGain;
+        const analogOut = x * presetOutputCalibrationGain * outputGain * couplingMakeup;
         updateStageMeter(slOutput, ch, 0, analogOut);
 
         const globalTarget = this.bypassed ? 1 : 0;
@@ -1125,6 +1210,7 @@ class TapeProcessor extends AudioWorkletProcessor {
     this.stageFade.set('inputXfmr', fadeInputXfmr);
     this.stageFade.set('recordAmp', fadeRecordAmp);
     this.stageFade.set('recordEQ', fadeRecordEQ);
+    this.stageFade.set('bias', fadeBias);
     this.stageFade.set('hysteresis', fadeHysteresis);
     this.stageFade.set('head', fadeHead);
     this.stageFade.set('transport', fadeTransport);

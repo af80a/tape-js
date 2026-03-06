@@ -5,6 +5,8 @@ export type WorkletMessage =
   | { type: 'set-preset'; value: string }
   | { type: 'set-speed'; value: number }
   | { type: 'set-oversample'; value: number }
+  | { type: 'set-coupling-amount'; value: number }
+  | { type: 'set-record-coupling-mode'; value: 'delayed' | 'predictor' }
   | { type: 'set-formula'; value: string }
   | { type: 'set-bypass'; value: boolean }
   | { type: 'set-stage-bypass'; stageId: StageId; value: boolean }

@@ -1,44 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-
-interface MockProcessorInstance {
-  port: {
-    onmessage: ((event: MessageEvent) => void) | null;
-    postMessage: ReturnType<typeof vi.fn>;
-  };
-}
-
-type ProcessorCtor = new (options?: { processorOptions?: Record<string, unknown> }) => MockProcessorInstance;
-
-async function loadProcessorCtor(): Promise<ProcessorCtor> {
-  vi.resetModules();
-
-  let ctor: ProcessorCtor | null = null;
-
-  class MockAudioWorkletProcessor {
-    port = {
-      onmessage: null as ((event: MessageEvent) => void) | null,
-      postMessage: vi.fn(),
-    };
-  }
-
-  vi.stubGlobal('sampleRate', 48000);
-  vi.stubGlobal('AudioWorkletProcessor', MockAudioWorkletProcessor);
-  vi.stubGlobal('registerProcessor', (_name: string, processorCtor: ProcessorCtor) => {
-    ctor = processorCtor;
-  });
-
-  await import('../tape-processor');
-
-  if (!ctor) {
-    throw new Error('Tape processor did not register');
-  }
-
-  return ctor;
-}
-
-function send(processor: MockProcessorInstance, data: Record<string, unknown>): void {
-  processor.port.onmessage?.({ data } as MessageEvent);
-}
+import { loadProcessorCtor, send, type TestProcessor } from './helpers/worklet-test-utils';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -53,7 +14,7 @@ describe('TapeProcessor state replay', () => {
         oversample: 2,
         tapeSpeed: 15,
       },
-    }) as MockProcessorInstance & Record<string, unknown>;
+    }) as TestProcessor;
 
     send(processor, { type: 'set-stage-variant', stageId: 'recordAmp', value: 'transistor' });
     send(processor, { type: 'set-stage-variant', stageId: 'playbackEQ', value: 'NAB' });
@@ -83,7 +44,7 @@ describe('TapeProcessor state replay', () => {
         oversample: 2,
         tapeSpeed: 15,
       },
-    }) as MockProcessorInstance & Record<string, unknown>;
+    }) as TestProcessor;
 
     send(processor, { type: 'set-stage-variant', stageId: 'recordAmp', value: 'tube' });
     send(processor, { type: 'set-stage-variant', stageId: 'playbackAmp', value: 'transistor' });
@@ -94,5 +55,46 @@ describe('TapeProcessor state replay', () => {
     expect((channels[0].recordAmp as { mode: string }).mode).toBe('tube');
     expect((channels[0].playbackAmp as { mode: string }).mode).toBe('transistor');
     expect((channels[0].recordOversampler as { factor: number }).factor).toBe(4);
+  });
+
+  it('updates record coupling mode via runtime message', async () => {
+    const TapeProcessor = await loadProcessorCtor();
+    const processor = new TapeProcessor({
+      processorOptions: {
+        preset: 'studer',
+        oversample: 2,
+        tapeSpeed: 15,
+      },
+    }) as TestProcessor;
+
+    expect(processor['recordCouplingMode']).toBe('delayed');
+
+    send(processor, { type: 'set-record-coupling-mode', value: 'predictor' });
+    expect(processor['recordCouplingMode']).toBe('predictor');
+
+    send(processor, { type: 'set-record-coupling-mode', value: 'bogus' });
+    expect(processor['recordCouplingMode']).toBe('delayed');
+  });
+
+  it('updates coupling amount via runtime message and clamps invalid values', async () => {
+    const TapeProcessor = await loadProcessorCtor();
+    const processor = new TapeProcessor({
+      processorOptions: {
+        preset: 'studer',
+        oversample: 2,
+        tapeSpeed: 15,
+      },
+    }) as TestProcessor;
+
+    expect(processor['couplingAmount']).toBe(1);
+
+    send(processor, { type: 'set-coupling-amount', value: 1.35 });
+    expect(processor['couplingAmount']).toBeCloseTo(1.35);
+
+    send(processor, { type: 'set-coupling-amount', value: 99 });
+    expect(processor['couplingAmount']).toBe(3);
+
+    send(processor, { type: 'set-coupling-amount', value: -1 });
+    expect(processor['couplingAmount']).toBe(0.25);
   });
 });

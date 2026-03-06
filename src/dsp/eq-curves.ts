@@ -26,7 +26,7 @@
 export type EQStandard = "NAB" | "IEC";
 
 /** Tape speed in inches per second. */
-export type TapeSpeed = 15 | 7.5 | 3.75;
+export type TapeSpeed = 30 | 15 | 7.5 | 3.75;
 
 /** EQ application mode. */
 export type EQMode = "record" | "playback";
@@ -49,16 +49,20 @@ interface TimeConstants {
 
 const TIME_CONSTANTS: Record<EQStandard, Record<TapeSpeed, TimeConstants>> = {
   NAB: {
+    30: { T1: null, T2: 17.5 },
     15: { T1: 3180, T2: 50 },
     7.5: { T1: 3180, T2: 50 },
     3.75: { T1: 3180, T2: 90 },
   },
   IEC: {
+    30: { T1: null, T2: 17.5 },
     15: { T1: null, T2: 35 },
     7.5: { T1: null, T2: 70 },
     3.75: { T1: null, T2: 90 },
   },
 };
+
+const MASTERING_30_IPS: TimeConstants = { T1: null, T2: 17.5 };
 
 // ---------------------------------------------------------------------------
 // TapeEQ class
@@ -83,7 +87,7 @@ export class TapeEQ {
   private tDen!: number;
   private tNumStandard!: number;
   private tDenStandard!: number; // Unmodified T2 pole for color scaling
-  private readonly isIecRecord: boolean;
+  private colorUsesRecordZero = false;
   private readonly sampleRate: number;
 
   // TPT Filter State
@@ -105,7 +109,6 @@ export class TapeEQ {
     this.standard = standard;
     this.speed = speed;
     this.mode = mode;
-    this.isIecRecord = (standard === 'IEC' && mode === 'record');
 
     this.calculateTimeConstants();
   }
@@ -120,7 +123,9 @@ export class TapeEQ {
   }
 
   private calculateTimeConstants(): void {
-    const tc = TIME_CONSTANTS[this.standard][this.speed];
+    // 30 ips is treated as the fixed modern mastering curve (AES / IEC2, 17.5 µs)
+    // regardless of the legacy NAB/IEC selector, matching common mastering practice.
+    const tc = this.speed === 30 ? MASTERING_30_IPS : TIME_CONSTANTS[this.standard][this.speed];
 
     const T2 = tc.T2 * 1e-6;
     const tLim = 1 / (2 * Math.PI * 0.45 * this.sampleRate); // HF limit to prevent Nyquist blowout
@@ -134,6 +139,7 @@ export class TapeEQ {
       this.tNum = tc.T1 !== null ? T2 : tLim;
       this.tDen = tc.T1 !== null ? T1 : T2;
     }
+    this.colorUsesRecordZero = this.mode === 'record' && tc.T1 === null;
 
     // @ts-ignore - allow readonly override during setup
     this.tNumStandard = this.tNum;
@@ -183,9 +189,9 @@ export class TapeEQ {
    */
   setColor(v: number): void {
     const clamped = Math.max(-1, Math.min(1, v));
-    if (this.isIecRecord) {
-      // IEC record: tNum IS the HF boost zero. Increasing it lowers the zero
-      // frequency → more of the audio band gets boosted → brighter.
+    if (this.colorUsesRecordZero) {
+      // Single-time-constant record curves (IEC and 30 ips mastering) expose
+      // color by moving the HF boost zero, not the limiter pole.
       this.tNum = this.tNumStandard * Math.pow(2, clamped);
     } else {
       // NAB / IEC playback: tDen is the HF pole. Decreasing it raises the pole

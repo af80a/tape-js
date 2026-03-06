@@ -1,5 +1,10 @@
 import { create } from 'zustand';
 import { AudioFileLoader } from '../audio/file-loader';
+import {
+  INPUT_ALIGN_MODES,
+  analyzeAudioBufferInputAlignment,
+  type InputAlignMode,
+} from '../audio/input-normalization';
 import { WorkletBridge, createWorkletBridge, getWorkletUrl } from '../audio/worklet-bridge';
 import { STAGE_IDS, type StageId } from '../types/stages';
 import type { WorkletMessage, WorkletResponse } from '../types/messages';
@@ -22,6 +27,9 @@ export interface ScopeSnapshot {
 export const SCOPE_STAGE_IDS = ['inputXfmr', 'recordAmp', 'hysteresis', 'playbackAmp', 'outputXfmr'] as const;
 export type ScopeStageId = (typeof SCOPE_STAGE_IDS)[number];
 type DebugStatsResponse = Extract<WorkletResponse, { type: 'debug-stats' }>;
+export type RecordCouplingMode = 'delayed' | 'predictor';
+const MIN_COUPLING_AMOUNT = 0.25;
+const MAX_COUPLING_AMOUNT = 3.0;
 
 export const SCOPE_BUFFER_SIZE = 100; // ~5 seconds at 50ms meter interval
 
@@ -89,6 +97,10 @@ function buildPresetStageParams(): ActiveStageParamMap {
   return active;
 }
 
+function normalizeInputAlignMode(value: string): InputAlignMode {
+  return INPUT_ALIGN_MODES.find((mode) => mode === value) ?? 'mix';
+}
+
 function formatMetricArray(values?: number[]): string {
   return values && values.length ? values.join('/') : 'n/a';
 }
@@ -108,6 +120,9 @@ interface AudioEngineState {
   machinePreset: string;
   tapeSpeed: number;
   oversample: number;
+  couplingAmount: number;
+  recordCouplingMode: RecordCouplingMode;
+  inputAlignMode: InputAlignMode;
   formula: string;
   headroom: number;
   currentTime: number;
@@ -134,6 +149,9 @@ interface AudioEngineState {
   setMachinePreset: (preset: string, stages?: StageSnapshotMap) => void;
   setTapeSpeed: (speed: number) => void;
   setOversample: (factor: number) => void;
+  setCouplingAmount: (amount: number) => void;
+  setRecordCouplingMode: (mode: RecordCouplingMode) => void;
+  setInputAlignMode: (mode: InputAlignMode) => void;
   setFormula: (formula: string) => void;
   setHeadroom: (headroom: number) => void;
   setGlobalBypass: (bypassed: boolean) => void;
@@ -151,7 +169,7 @@ function applyStateToWorklet(
   target: WorkletSyncTarget,
   state: Pick<
     AudioEngineState,
-    'machinePreset' | 'tapeSpeed' | 'formula' | 'globalBypassed' | 'headroom' | 'paramValues' | 'activeStageParams'
+    'machinePreset' | 'tapeSpeed' | 'couplingAmount' | 'recordCouplingMode' | 'formula' | 'globalBypassed' | 'headroom' | 'paramValues' | 'activeStageParams'
   >,
   stages: StageSnapshotMap,
   oversample: number,
@@ -160,6 +178,8 @@ function applyStateToWorklet(
   target.postMessage({ type: 'set-preset', value: state.machinePreset });
   target.postMessage({ type: 'set-speed', value: state.tapeSpeed });
   target.postMessage({ type: 'set-oversample', value: oversample });
+  target.postMessage({ type: 'set-coupling-amount', value: state.couplingAmount });
+  target.postMessage({ type: 'set-record-coupling-mode', value: state.recordCouplingMode });
   target.postMessage({ type: 'set-formula', value: state.formula });
   target.postMessage({ type: 'set-bypass', value: state.globalBypassed });
 
@@ -191,6 +211,9 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
   machinePreset: 'studer',
   tapeSpeed: 15,
   oversample: 2,
+  couplingAmount: 1,
+  recordCouplingMode: 'delayed',
+  inputAlignMode: 'mix',
   formula: '900',
   headroom: 18,
   currentTime: 0,
@@ -214,7 +237,14 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
     if (get().audioCtx) return;
 
     const audioCtx = new AudioContext();
-    const bridge = await createWorkletBridge(audioCtx);
+    const bridge = await createWorkletBridge(
+      audioCtx,
+      get().machinePreset,
+      get().oversample,
+      get().tapeSpeed,
+      get().couplingAmount,
+      get().recordCouplingMode,
+    );
     const state = get();
     applyStateToWorklet(bridge, state, useStageParams.getState().stages, state.oversample);
 
@@ -240,6 +270,11 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
     await get().ensureAudioContext();
     const loader = get().loader!;
     await loader.loadFile(file);
+    const buffer = loader.getBuffer();
+    if (buffer) {
+      const metrics = analyzeAudioBufferInputAlignment(buffer, get().inputAlignMode);
+      get().setParam('inputGain', metrics.recommendedInputGain);
+    }
     loader.play();
     set({ isPlaying: true });
   },
@@ -273,6 +308,7 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
     const activeStageParams = buildPresetStageParams();
     const nextState = get();
     const nextStages = stages ?? useStageParams.getState().stages;
+    paramValues.inputGain = nextState.paramValues.inputGain;
 
     if (nextState.bridge) {
       applyStateToWorklet(
@@ -280,6 +316,8 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
         {
           machinePreset: resolvedPresetName,
           tapeSpeed: nextState.tapeSpeed,
+          couplingAmount: nextState.couplingAmount,
+          recordCouplingMode: nextState.recordCouplingMode,
           formula: resolvedPreset.defaultFormula,
           globalBypassed: nextState.globalBypassed,
           headroom: nextState.headroom,
@@ -301,7 +339,7 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
   },
 
   setTapeSpeed: (speed: number) => {
-    const normalized = speed === 7.5 || speed === 3.75 ? speed : 15;
+    const normalized = speed === 30 || speed === 7.5 || speed === 3.75 ? speed : 15;
     get().bridge?.postMessage({ type: 'set-speed', value: normalized });
     set({ tapeSpeed: normalized });
   },
@@ -310,6 +348,29 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
     const normalized = factor === 4 ? 4 : 2;
     get().bridge?.postMessage({ type: 'set-oversample', value: normalized });
     set({ oversample: normalized });
+  },
+
+  setCouplingAmount: (amount: number) => {
+    const normalized = Math.max(MIN_COUPLING_AMOUNT, Math.min(MAX_COUPLING_AMOUNT, amount));
+    get().bridge?.postMessage({ type: 'set-coupling-amount', value: normalized });
+    set({ couplingAmount: normalized });
+  },
+
+  setRecordCouplingMode: (mode: RecordCouplingMode) => {
+    const normalized = mode === 'predictor' ? 'predictor' : 'delayed';
+    get().bridge?.postMessage({ type: 'set-record-coupling-mode', value: normalized });
+    set({ recordCouplingMode: normalized });
+  },
+
+  setInputAlignMode: (mode: InputAlignMode) => {
+    const normalized = normalizeInputAlignMode(mode);
+    set({ inputAlignMode: normalized });
+
+    const buffer = get().loader?.getBuffer();
+    if (!buffer) return;
+
+    const metrics = analyzeAudioBufferInputAlignment(buffer, normalized);
+    get().setParam('inputGain', metrics.recommendedInputGain);
   },
 
   setFormula: (formula: string) => {
@@ -381,6 +442,8 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
           preset: renderState.machinePreset,
           oversample: 16,
           tapeSpeed: renderState.tapeSpeed,
+          couplingAmount: renderState.couplingAmount,
+          recordCouplingMode: renderState.recordCouplingMode,
           totalFrames: sourceBuffer.length,
         },
       });

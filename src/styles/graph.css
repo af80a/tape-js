@@ -284,6 +284,12 @@
   gap: 8px;
 }
 
+.graph-header-controls__coupling {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .graph-header-controls__headroom .headroom-label {
   font-family: 'Barlow', sans-serif;
   font-size: 9px;
@@ -294,7 +300,18 @@
   white-space: nowrap;
 }
 
-.graph-header-controls__headroom input[type="range"] {
+.graph-header-controls__coupling .coupling-label {
+  font-family: 'Barlow', sans-serif;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: #787d8a;
+  white-space: nowrap;
+}
+
+.graph-header-controls__headroom input[type="range"],
+.graph-header-controls__coupling input[type="range"] {
   -webkit-appearance: none;
   appearance: none;
   width: 80px;
@@ -303,13 +320,15 @@
   cursor: pointer;
 }
 
-.graph-header-controls__headroom input[type="range"]::-webkit-slider-runnable-track {
+.graph-header-controls__headroom input[type="range"]::-webkit-slider-runnable-track,
+.graph-header-controls__coupling input[type="range"]::-webkit-slider-runnable-track {
   height: 3px;
   background: #181b22;
   border-radius: 1.5px;
 }
 
-.graph-header-controls__headroom input[type="range"]::-webkit-slider-thumb {
+.graph-header-controls__headroom input[type="range"]::-webkit-slider-thumb,
+.graph-header-controls__coupling input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
   width: 11px;
   height: 11px;
@@ -320,14 +339,16 @@
   box-shadow: 0 0 6px rgba(196, 154, 108, 0.3);
 }
 
-.graph-header-controls__headroom input[type="range"]::-moz-range-track {
+.graph-header-controls__headroom input[type="range"]::-moz-range-track,
+.graph-header-controls__coupling input[type="range"]::-moz-range-track {
   height: 3px;
   background: #181b22;
   border-radius: 1.5px;
   border: none;
 }
 
-.graph-header-controls__headroom input[type="range"]::-moz-range-thumb {
+.graph-header-controls__headroom input[type="range"]::-moz-range-thumb,
+.graph-header-controls__coupling input[type="range"]::-moz-range-thumb {
   width: 11px;
   height: 11px;
   border-radius: 50%;
@@ -336,7 +357,8 @@
   box-shadow: 0 0 6px rgba(196, 154, 108, 0.3);
 }
 
-.headroom-value {
+.headroom-value,
+.coupling-value {
   font-family: 'IBM Plex Mono', monospace;
   font-size: 11px;
   font-weight: 400;

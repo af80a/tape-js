@@ -279,6 +279,10 @@ body:has(.app-root--graph) {
   grid-template-columns: repeat(6, 1fr);
 }
 
+.compact-controls-row--7col {
+  grid-template-columns: repeat(7, 1fr);
+}
+
 .compact-controls-row--5col {
   grid-template-columns: repeat(5, 1fr);
 }

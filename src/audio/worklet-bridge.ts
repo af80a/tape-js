@@ -55,6 +55,8 @@ export async function createWorkletBridge(
   preset = 'studer',
   oversample = 2,
   tapeSpeed = 15,
+  couplingAmount = 1,
+  recordCouplingMode: 'delayed' | 'predictor' = 'delayed',
 ): Promise<WorkletBridge> {
   await audioCtx.audioWorklet.addModule(getWorkletUrl());
 
@@ -62,7 +64,7 @@ export async function createWorkletBridge(
     numberOfInputs: 1,
     numberOfOutputs: 1,
     outputChannelCount: [2],
-    processorOptions: { preset, oversample, tapeSpeed },
+    processorOptions: { preset, oversample, tapeSpeed, couplingAmount, recordCouplingMode },
   });
   node.connect(audioCtx.destination);
 

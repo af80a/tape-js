@@ -4,13 +4,26 @@ import { Select } from '../controls/Select';
 import { useAudioEngine } from '../../stores/audio-engine';
 import { useStageParams } from '../../stores/stage-params';
 
+const INPUT_ALIGN_OPTIONS = [
+  { value: 'mix', label: 'Mix' },
+  { value: 'track', label: 'Track' },
+  { value: 'drums', label: 'Drums' },
+  { value: 'bass', label: 'Bass' },
+];
+
 export function GraphHeaderControls() {
   const bypassed = useAudioEngine((s) => s.globalBypassed);
   const tapeSpeed = useAudioEngine((s) => s.tapeSpeed);
   const oversample = useAudioEngine((s) => s.oversample);
+  const couplingAmount = useAudioEngine((s) => s.couplingAmount);
+  const recordCouplingMode = useAudioEngine((s) => s.recordCouplingMode);
+  const inputAlignMode = useAudioEngine((s) => s.inputAlignMode);
   const setGlobalBypass = useAudioEngine((s) => s.setGlobalBypass);
   const setTapeSpeed = useAudioEngine((s) => s.setTapeSpeed);
   const setOversample = useAudioEngine((s) => s.setOversample);
+  const setCouplingAmount = useAudioEngine((s) => s.setCouplingAmount);
+  const setRecordCouplingMode = useAudioEngine((s) => s.setRecordCouplingMode);
+  const setInputAlignMode = useAudioEngine((s) => s.setInputAlignMode);
   const scopeOpen = useAudioEngine((s) => s.scopeOpen);
   const toggleScope = useAudioEngine((s) => s.toggleScope);
   const preset = useStageParams((s) => s.currentPreset);
@@ -34,9 +47,21 @@ export function GraphHeaderControls() {
     (v: string) => setOversample(parseInt(v, 10)),
     [setOversample],
   );
+  const handleInputAlignModeChange = useCallback(
+    (v: string) => setInputAlignMode(v as 'mix' | 'track' | 'drums' | 'bass'),
+    [setInputAlignMode],
+  );
   const handleHeadroomChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => setHeadroom(parseFloat(e.target.value)),
     [setHeadroom],
+  );
+  const handleCouplingChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => setCouplingAmount(parseFloat(e.target.value)),
+    [setCouplingAmount],
+  );
+  const handleRecordCouplingToggle = useCallback(
+    (active: boolean) => setRecordCouplingMode(active ? 'predictor' : 'delayed'),
+    [setRecordCouplingMode],
   );
 
   return (
@@ -56,6 +81,7 @@ export function GraphHeaderControls() {
         <Select
           label="Speed"
           options={[
+            { value: '30', label: '30 ips' },
             { value: '15', label: '15 ips' },
             { value: '7.5', label: '7.5 ips' },
             { value: '3.75', label: '3.75 ips' },
@@ -71,6 +97,12 @@ export function GraphHeaderControls() {
           ]}
           value={String(oversample)}
           onChange={handleOversampleChange}
+        />
+        <Select
+          label="Auto In"
+          options={INPUT_ALIGN_OPTIONS}
+          value={inputAlignMode}
+          onChange={handleInputAlignModeChange}
         />
       </div>
 
@@ -93,6 +125,22 @@ export function GraphHeaderControls() {
 
       <div className="graph-header-controls__divider" />
 
+      <div className="graph-header-controls__group graph-header-controls__coupling">
+        <span className="coupling-label">COUPLING</span>
+        <input
+          type="range"
+          min="0.25"
+          max="3"
+          step="0.01"
+          value={couplingAmount}
+          onChange={handleCouplingChange}
+          title={`Coupling: ${couplingAmount.toFixed(2)}x`}
+        />
+        <span className="coupling-value">{couplingAmount.toFixed(2)}x</span>
+      </div>
+
+      <div className="graph-header-controls__divider" />
+
       {/* Status group */}
       <div className="graph-header-controls__group">
         <ToggleButton
@@ -106,6 +154,12 @@ export function GraphHeaderControls() {
           className="scope-btn"
           active={scopeOpen}
           onToggle={toggleScope}
+        />
+        <ToggleButton
+          label="PREDICT"
+          className="scope-btn"
+          active={recordCouplingMode === 'predictor'}
+          onToggle={handleRecordCouplingToggle}
         />
       </div>
     </div>

@@ -592,4 +592,29 @@ describe('inter-stage coupling API', () => {
     expect(voltageDrop).toBeGreaterThan(0);
     expect(voltageDrop).toBeLessThan(2);
   });
+
+  it('previewGridCurrent is side-effect free', () => {
+    const amp = new AmplifierModel('tube', 0.9);
+    const fs = 48_000;
+    const input = 0.65;
+
+    for (let i = 0; i < fs * 0.1; i++) {
+      amp.process(0.7 * Math.sin(2 * Math.PI * 220 * i / fs));
+    }
+
+    const preview = amp.previewGridCurrent(input, 0, 22_000);
+    const outputAfterPreview = amp.process(input, 0, 22_000);
+
+    const control = new AmplifierModel('tube', 0.9);
+    for (let i = 0; i < fs * 0.1; i++) {
+      control.process(0.7 * Math.sin(2 * Math.PI * 220 * i / fs));
+    }
+    const outputControl = control.process(input, 0, 22_000);
+
+    expect(preview).toBeGreaterThanOrEqual(0);
+    expect(outputAfterPreview).toBeCloseTo(outputControl, 9);
+    expect(amp.getGridCurrent()).toBeCloseTo(control.getGridCurrent(), 9);
+    expect(amp.getPlateCurrent()).toBeCloseTo(control.getPlateCurrent(), 9);
+    expect(amp.getScreenVoltage()).toBeCloseTo(control.getScreenVoltage(), 9);
+  });
 });

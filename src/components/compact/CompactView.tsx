@@ -46,6 +46,7 @@ const BUMP_OPTIONS = [
 ];
 
 const SPEED_OPTIONS = [
+  { value: '30', label: '30 ips' },
   { value: '15', label: '15 ips' },
   { value: '7.5', label: '7.5 ips' },
   { value: '3.75', label: '3.75 ips' },
@@ -54,6 +55,13 @@ const SPEED_OPTIONS = [
 const OVERSAMPLE_OPTIONS = [
   { value: '2', label: '2x' },
   { value: '4', label: '4x' },
+];
+
+const INPUT_ALIGN_OPTIONS = [
+  { value: 'mix', label: 'Mix' },
+  { value: 'track', label: 'Track' },
+  { value: 'drums', label: 'Drums' },
+  { value: 'bass', label: 'Bass' },
 ];
 
 function fmtDb(v: number): string {
@@ -75,6 +83,10 @@ function fmtAlign(v: number): string {
 
 function fmtRef(v: number): string {
   return `${v.toFixed(0)} dB`;
+}
+
+function fmtMultiplier(v: number): string {
+  return `${v.toFixed(2)}x`;
 }
 
 function fmtColor(v: number): string {
@@ -101,12 +113,18 @@ export function CompactView({ onPresetChange }: CompactViewProps) {
   const bypassed = useAudioEngine((s) => s.globalBypassed);
   const tapeSpeed = useAudioEngine((s) => s.tapeSpeed);
   const oversample = useAudioEngine((s) => s.oversample);
+  const couplingAmount = useAudioEngine((s) => s.couplingAmount);
+  const recordCouplingMode = useAudioEngine((s) => s.recordCouplingMode);
+  const inputAlignMode = useAudioEngine((s) => s.inputAlignMode);
   const formula = useAudioEngine((s) => s.formula);
   const stages = useStageParams((s) => s.stages);
   const setGlobalBypass = useAudioEngine((s) => s.setGlobalBypass);
   const setHeadroom = useAudioEngine((s) => s.setHeadroom);
   const setTapeSpeed = useAudioEngine((s) => s.setTapeSpeed);
   const setOversample = useAudioEngine((s) => s.setOversample);
+  const setCouplingAmount = useAudioEngine((s) => s.setCouplingAmount);
+  const setRecordCouplingMode = useAudioEngine((s) => s.setRecordCouplingMode);
+  const setInputAlignMode = useAudioEngine((s) => s.setInputAlignMode);
   const setFormula = useAudioEngine((s) => s.setFormula);
   const setAmpType = useStageParams((s) => s.setAmpType);
   const headroom = useAudioEngine((s) => s.headroom);
@@ -248,7 +266,7 @@ export function CompactView({ onPresetChange }: CompactViewProps) {
       {/* Section 2: Machine */}
       <section className="compact-section">
         <h3 className="compact-section__label">Machine</h3>
-        <div className="controls-row compact-controls-row compact-controls-row--6col">
+        <div className="controls-row compact-controls-row compact-controls-row--9col">
           <Select
             label="MACHINE"
             options={MACHINE_OPTIONS}
@@ -289,6 +307,25 @@ export function CompactView({ onPresetChange }: CompactViewProps) {
             value={String(oversample)}
             onChange={(value) => { setOversample(parseInt(value, 10)); }}
           />
+          <Select
+            label="AUTO IN"
+            options={INPUT_ALIGN_OPTIONS}
+            value={inputAlignMode}
+            onChange={(value) => { setInputAlignMode(value as 'mix' | 'track' | 'drums' | 'bass'); }}
+          />
+          <Knob
+            label="COUPLING" min={0.25} max={3} step={0.01} value={couplingAmount}
+            formatValue={fmtMultiplier}
+            onChange={(v) => { setCouplingAmount(v); }}
+          />
+          <div className="compact-button-control">
+            <div className="select-label">Coupling</div>
+            <ToggleButton
+              label="PREDICT"
+              active={recordCouplingMode === 'predictor'}
+              onToggle={(active) => { setRecordCouplingMode(active ? 'predictor' : 'delayed'); }}
+            />
+          </div>
         </div>
       </section>
 
