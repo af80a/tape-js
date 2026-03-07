@@ -525,6 +525,45 @@ describe('HysteresisProcessor', () => {
         expect(Number.isFinite(y)).toBe(true);
       }
     });
+
+    it('hot program material temporarily starves bias linearization for the following quiet tone', () => {
+      const hp = new HysteresisProcessor(sampleRate);
+      hp.setDrive(0.6);
+      hp.setSaturation(0.5);
+      hp.setBias(0.55);
+
+      const hotFreq = 880;
+      const hotSamples = Math.floor(sampleRate * 0.03);
+      for (let i = 0; i < hotSamples; i++) {
+        hp.process(0.95 * Math.sin(2 * Math.PI * hotFreq * i / sampleRate));
+      }
+
+      const quietFreq = 440;
+      const quietSamples = Math.floor(sampleRate * 0.06);
+      const quietOutputs: number[] = [];
+      for (let i = 0; i < quietSamples; i++) {
+        quietOutputs.push(hp.process(0.12 * Math.sin(2 * Math.PI * quietFreq * i / sampleRate)));
+      }
+
+      function distortionProxyWindow(outputs: number[], start: number, end: number): number {
+        const window = outputs.slice(start, end);
+        const maxOut = Math.max(...window.map(Math.abs));
+        if (maxOut < 0.001) return 0;
+        let totalDiff = 0;
+        for (let i = 0; i < window.length; i++) {
+          const normalized = window[i] / maxOut;
+          const ref = Math.sin(2 * Math.PI * quietFreq * (start + i) / sampleRate);
+          totalDiff += Math.abs(normalized - ref);
+        }
+        return totalDiff / window.length;
+      }
+
+      const windowSize = Math.floor(quietSamples / 3);
+      const earlyDist = distortionProxyWindow(quietOutputs, 0, windowSize);
+      const lateDist = distortionProxyWindow(quietOutputs, quietSamples - windowSize, quietSamples);
+
+      expect(earlyDist).toBeGreaterThan(lateDist * 1.01);
+    });
   });
 
   describe('getSaturationDepth', () => {

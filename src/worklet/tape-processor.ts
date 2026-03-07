@@ -69,7 +69,7 @@ type RecordCouplingMode = 'delayed' | 'predictor';
 const VALID_TAPE_SPEEDS: readonly TapeSpeed[] = [30, 15, 7.5, 3.75];
 const MIN_COUPLING_AMOUNT = 0.25;
 const MAX_COUPLING_AMOUNT = 3.0;
-const COUPLING_LEVEL_MATCH_EXPONENT = 0.7;
+const COUPLING_LEVEL_MATCH_EXPONENT = 1.0;
 const SATURATION_STAGE_IDS: readonly StageId[] = [
   'inputXfmr',
   'recordAmp',
@@ -637,6 +637,7 @@ class TapeProcessor extends AudioWorkletProcessor {
     const hysteresis = new HysteresisProcessor(fs * osFactor);
     hysteresis.setDrive(preset.drive);
     hysteresis.setSaturation(preset.saturation);
+    hysteresis.setNominalBias(preset.biasDefault);
     this.applyFormulaToTargets(
       { hysteresis, wavelengthContour },
       this.currentFormula ?? preset.defaultFormula,
