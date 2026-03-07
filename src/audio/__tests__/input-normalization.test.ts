@@ -27,7 +27,7 @@ function generateSparseClicks(length: number, interval: number, peak: number): F
 describe('input normalization analysis', () => {
   const sampleRate = 48_000;
 
-  it('returns unity gain for a nominal -18 dBFS RMS sine', () => {
+  it('returns unity gain for the default plugin alignment target', () => {
     const peak = dbfsRmsToSinePeak(-18);
     const signal = generateSine(sampleRate, sampleRate, 1_000, peak);
 
@@ -37,7 +37,7 @@ describe('input normalization analysis', () => {
     expect(metrics.recommendedInputGain).toBeCloseTo(1, 2);
   });
 
-  it('attenuates hot material toward the nominal machine level', () => {
+  it('attenuates hot material toward the plugin alignment target', () => {
     const peak = dbfsRmsToSinePeak(-9);
     const signal = generateSine(sampleRate, sampleRate, 1_000, peak);
 

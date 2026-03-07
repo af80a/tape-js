@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { AzimuthModel } from '../azimuth';
 
+/**
+ * Evidence notes:
+ * - Inter-channel delay follows trackSpacing * tan(theta) / tapeSpeed.
+ * - Per-track HF loss follows sinc(trackWidth * f * tan(theta) / tapeSpeed).
+ * - Weave is treated as geometric angle modulation, not synthetic contact loss.
+ */
+
 describe('AzimuthModel', () => {
   const fs = 48_000;
   const speed15 = 15;
@@ -169,6 +176,17 @@ describe('AzimuthModel', () => {
     }
 
     expect(maxDiff).toBeGreaterThan(0.01);
+  });
+
+  it('weave modulates azimuth angle without inventing extra contact spacing', () => {
+    const az = new AzimuthModel(fs, 0, speed15, studerSpacing, studerTrackWidth);
+    az.setAzimuth(0);
+    az.setWeave(5);
+
+    for (let i = 0; i < 512; i++) {
+      expect(az.captureState().contactSpacing).toBe(0);
+      az.process(0);
+    }
   });
 
   it('inter-channel phase shift follows the azimuth delay law across frequency', () => {

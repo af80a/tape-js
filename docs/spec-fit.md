@@ -1,76 +1,98 @@
-# Spec-Fit Notes
+# Physics Modeling Policy
 
-This project now distinguishes between two kinds of calibration:
+This project targets physically defensible tape-machine simulation. The goal is
+not an "in-house tone," not a golden baseline, and not preservation of the
+current implementation for its own sake. The code should follow the strongest
+available combination of published equations, service-manual data, machine
+specifications, and clearly documented approximations.
 
-- House calibration: the plugin's internal alignment convention.
-- Spec fit: published machine behaviors that can be checked without owning the decks.
+## Hard Rules
 
-## House calibration
+- A model stays in the physical core only if it is backed by:
+  - a cited equation or derivation
+  - a published standard
+  - a service manual or documented machine geometry/specification
+  - a clearly named approximation with stated assumptions and limits
+- Implementation snapshots are not evidence.
+- Sonic baselines are not evidence unless they come from measured hardware
+  captures with documented test conditions.
+- Plugin operating-level conventions are not machine physics.
+- If a physically justified change breaks an advisory or legacy test, the test
+  should be updated or removed instead of forcing the model back toward the old
+  behavior.
 
-Current house standard:
+## What Tests May Enforce
 
-- `0 VU = -18 dBFS RMS` sine at `15 ips`
-- Nominal `1 kHz` full-chain alignment should land within about `±0.5 dB`
-- `+6 VU` should compress measurably and raise distortion relative to nominal
-- `30 ips` is treated as the fixed mastering curve (`17.5 µs`, AES / IEC2)
+- Published EQ standards such as NAB, IEC, and `30 ips = 17.5 µs` mastering EQ
+- Geometric relations such as azimuth delay, azimuth sinc loss, and head-width
+  or track-spacing consequences
+- Analytical or standards-derived head-response behavior
+- Published machine-spec ranges such as wow/flutter envelopes, where the test
+  checks the range rather than a frozen waveform
+- Numerical health constraints such as bounded output, finite state, and solver
+  stability when those checks protect the mathematical model
 
-These are plugin-side operating assumptions. They are not copied from any one
-hardware manual because the original machines are analog and do not define a
-digital dBFS reference.
+## What Tests Must Not Enforce
 
-## Published anchors in use
+- Golden output baselines from the current implementation
+- Private solver state or internal arrays
+- Required differences between alternate numerical solvers unless a physical
+  justification exists
+- House calibration claims such as fixed `0 VU` to dBFS mappings
+- Residual-null or coloration-envelope targets that are not traceable to a
+  published reference
+- Coefficients or heuristics kept only because they preserve a familiar sound
 
-The fit is currently anchored to these published or widely cited machine traits:
+## Current Reference Anchors
+
+These published anchors are acceptable evidence for the current machine families:
 
 - Studer A810:
   - Professional line level around `+4 dBm`
   - Maximum output around `+24 dBm`
-  - Typical magnetic reference flux values of `185 / 250 / 320 nWb/m`
-  - Very low wow/flutter at `15 ips`, generally quoted around `0.04-0.05%`
+  - Magnetic reference flux values around `185 / 250 / 320 nWb/m`
+  - Very low wow/flutter at `15 ips`, commonly quoted around `0.04-0.05%`
 - Ampex ATR-102:
-  - Professional mastering-machine operating practice with selectable operating
-    levels tied to reference flux (`185 / 250 / 355 / 500 nWb/m`)
-  - Widely cited low wow/flutter around `0.04%` at `15 ips`
+  - Mastering-machine operating practice tied to reference flux
+    (`185 / 250 / 355 / 500 nWb/m`)
+  - Widely cited wow/flutter around `0.04%` at `15 ips`
 - MCI JH-24:
   - Line level around `+4 dBm`
   - Maximum output around `+26 dBm`
   - Wow/flutter around `0.04%`
   - Frequency response roughly `30 Hz - 22 kHz ±2 dB` at `15 ips`
 
-## What is enforced in code
+## Known Approximations To Revisit
 
-- NAB/IEC EQ standards are implemented directly from published time constants.
-- Transport defaults are tested against pro-machine wow/flutter envelopes.
-- Preset-specific internal reproduce gain lines the modeled decks up at nominal level.
-- Nominal and `+6 VU` behavior is covered by generated-tone worklet tests.
-- `30 ips` uses a fixed `17.5 µs` mastering EQ and is tested for nominal line-up
-  plus extended high-frequency response relative to `15 ips`.
+The following areas are still approximation-heavy and should be treated as
+temporary until they are re-derived or replaced with stronger references:
 
-## Open gaps
+- Transport component weight mixes that are plausible but not yet traced to a
+  specific mechanical model
+- Transistor-stage asymmetry parameters that are still voicing-oriented rather
+  than tied to a published circuit derivation
+- Stationary hiss shaping that is not yet fit to measured deck noise spectra
+- Preset-level gain normalization constants that act as plugin calibration
+  rather than machine parameters
 
-Without real captures or bench measurements, these remain inferred rather than
-verified against a physical machine:
+## Verification Policy
 
-- Exact THD vs level for each preset
-- Odd/even harmonic balance of each electronics path
-- Bias-over-frequency behavior against a particular service manual procedure
-- Frequency-response fit of the full record/repro chain for one exact machine
-- Machine-specific `30 ips` transport or alignment idiosyncrasies beyond the
-  shared mastering-speed baseline
+- `npm test` is the default full verification pass.
+- `npm run test:worklet-physics` is the focused worklet-level integration suite
+  for published and geometry-backed constraints.
+- DSP or worklet changes should also run the most relevant targeted test file
+  for the subsystem that changed.
+- Do not reintroduce characterization snapshots or sound baselines unless they
+  are explicitly marked advisory and tied to measured hardware behavior.
 
-The current target is: "best defensible no-measurement fit", not archival
-cloning of a specific serial-number machine.
-
-## Reference links
+## Reference Links
 
 - Studer A810 quick reference and calibration notes:
   - https://www.manualslib.com/manual/2909878/Studer-A810.html
   - https://manuals.plus/m/1896f67721c6f81dca803ba3a9b5ea91d19c367743473258a940a004cc9a36f0
 - Ampex ATR-102 calibration conventions and tape operating levels:
   - https://help.uaudio.com/hc/en-us/articles/32491139365140-Ampex-ATR-102-Mastering-Tape-Recorder-Manual
-- IASA TC-04 playback equalization summary (including `30 ips = 17.5 µs` AES / IEC2):
+- IASA TC-04 playback equalization summary, including `30 ips = 17.5 µs` AES / IEC2:
   - https://www.iasa-web.org/book/export/html/435
-- Studer A810 quick reference (`30 ips` fixed to AES equalization):
-  - https://manuals.plus/m/1896f67721c6f81dca803ba3a9b5ea91d19c367743473258a940a004cc9a36f0
 - MCI JH-24 historical published specifications:
   - https://www.vintagedigital.com.au/mci-jh-24/

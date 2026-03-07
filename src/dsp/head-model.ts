@@ -9,10 +9,10 @@
  *    of the playback head gap.
  * 4. Spacing loss — exp(-2π * d * f / v) exponential HF loss from
  *    the head-to-tape air gap (Wallace equation).
- * 5. Dynamic spacing/contact modulation — momentary increases in
- *    head-to-tape spacing from coating defects, tape wander, and weave,
- *    modeled via the Wallace equation with a single spacing parameter
- *    d(t) driving both gain and HF rolloff.
+ * 5. Dynamic spacing modulation from dropouts — momentary increases in
+ *    head-to-tape spacing from coating defects or debris, modeled via the
+ *    Wallace equation with a single spacing parameter d(t) driving both
+ *    gain loss and HF rolloff.
  *
  * The gap + spacing losses are combined into a short FIR filter whose
  * coefficients are computed from the sampled frequency response via

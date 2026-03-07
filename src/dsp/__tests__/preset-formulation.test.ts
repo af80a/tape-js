@@ -35,4 +35,15 @@ describe('per-preset tape formulation', () => {
       expect(alpha, `${name} alpha out of range`).toBeLessThan(5e-3);
     }
   });
+
+  it('separates machine operating defaults from plugin calibration data', () => {
+    for (const [name, preset] of Object.entries(PRESETS)) {
+      expect(preset.defaults, `${name} missing defaults block`).toBeDefined();
+      expect(preset.defaults.bias, `${name} missing default bias`).toBeTypeOf('number');
+      expect(preset.defaults.recordAmpDrive, `${name} missing default record amp drive`).toBeTypeOf('number');
+      expect(preset.plugin, `${name} missing plugin calibration block`).toBeDefined();
+      expect(preset.plugin.outputTrim, `${name} missing plugin output trim`).toBeTypeOf('number');
+      expect(preset).not.toHaveProperty('outputCalibrationGain');
+    }
+  });
 });

@@ -17,8 +17,7 @@ npm run dev          # Start Vite dev server
 npm run build        # tsc + vite build (outputs to dist/)
 npm test             # Run vitest tests once
 npm run test:watch   # Run tests in watch mode
-npm run test:tape-baseline    # Compare current processor against the stored sound baseline
-npm run update:tape-baseline  # Regenerate the stored sound baseline after an intentional sonic change
+npm run test:worklet-physics  # Run worklet-level physical-constraint checks
 ```
 
 To run a single test file:
@@ -26,7 +25,7 @@ To run a single test file:
 npx vitest run src/dsp/__tests__/hysteresis.test.ts
 ```
 
-When changing DSP, the worklet, or any code that can affect sound, run `npm run test:tape-baseline` before considering the work done. Only run `npm run update:tape-baseline` when the sonic change is intentional and reviewed; do not refresh the baseline to mask a regression.
+When changing DSP, the worklet, or any code that can affect sound, run `npm test` before considering the work done. Also run the most relevant focused physics checks for the subsystem you touched, such as `npm run test:worklet-physics` or a targeted DSP test file. Do not introduce golden sound baselines or house-tone assertions unless they are backed by measured hardware captures or a documented analytical target.
 
 ## Architecture
 

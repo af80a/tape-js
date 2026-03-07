@@ -2,6 +2,13 @@ import { describe, it, expect } from 'vitest';
 import { TransportModel } from '../transport';
 import { PRESETS } from '../presets';
 
+/**
+ * Evidence notes:
+ * - Hard limits are based on published wow/flutter envelopes for professional decks.
+ * - Tests intentionally avoid waveform snapshots; they check bounded deviation,
+ *   stochastic structure, and whether preset defaults stay inside documented ranges.
+ */
+
 describe('TransportModel', () => {
   const fs = 44100;
 
@@ -320,8 +327,8 @@ describe('TransportModel', () => {
 
     it('Studer defaults stay within the published pro-machine wow/flutter envelope', () => {
       const model = new TransportModel(fs, 0, PRESETS.studer.transportProfile);
-      model.setWow(PRESETS.studer.wowDefault);
-      model.setFlutter(PRESETS.studer.flutterDefault);
+      model.setWow(PRESETS.studer.defaults.wow);
+      model.setFlutter(PRESETS.studer.defaults.flutter);
 
       // Studer A810 brochures/spec sheets quote max wow/flutter around 0.04-0.05%
       // at 15 ips (NAB/DIN weighted depending publication). The model is unweighted,
@@ -332,8 +339,8 @@ describe('TransportModel', () => {
 
     it('Ampex defaults stay within the published ATR-102 wow/flutter envelope', () => {
       const model = new TransportModel(fs, 0, PRESETS.ampex.transportProfile);
-      model.setWow(PRESETS.ampex.wowDefault);
-      model.setFlutter(PRESETS.ampex.flutterDefault);
+      model.setWow(PRESETS.ampex.defaults.wow);
+      model.setFlutter(PRESETS.ampex.defaults.flutter);
 
       // ATR-102 literature and derivative emulations consistently describe the
       // deck as an ultra-stable mastering machine around 0.04% weighted at 15 ips.
@@ -343,8 +350,8 @@ describe('TransportModel', () => {
 
     it('MCI defaults stay within the published JH-24 wow/flutter envelope', () => {
       const model = new TransportModel(fs, 0, PRESETS.mci.transportProfile);
-      model.setWow(PRESETS.mci.wowDefault);
-      model.setFlutter(PRESETS.mci.flutterDefault);
+      model.setWow(PRESETS.mci.defaults.wow);
+      model.setFlutter(PRESETS.mci.defaults.flutter);
 
       // Historical JH-24 spec sheets quote roughly 0.04% weighted wow/flutter.
       // The model is intentionally slightly conservative on the unweighted side.

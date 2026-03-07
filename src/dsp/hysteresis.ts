@@ -9,8 +9,6 @@
 const C_MAX = 0.99;
 const H_LIMIT = 256;
 const DEN_EPS = 1e-9;
-const BIAS_PROGRAM_EXCESS_WEIGHT = 1.25;
-const BIAS_PROGRAM_STARVATION_THRESHOLD = 1.2;
 
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v));
@@ -32,10 +30,8 @@ export class HysteresisProcessor {
   private c = 0.1; // reversibility parameter (derived from width)
   private alpha = 1.6e-3; // inter-domain coupling (constant)
   private baseC = 0.1; // tape formulation baseline reversibility (underbias floor)
-  private nominalBias = 0.5; // machine-aligned bias point for diminishing returns above nominal
   private biasAmplitude = 0; // physical bias amplitude from knob
   private biasActive = false; // true when adaptive bias mode is active (vs direct setC)
-  private biasProgramField = 0; // short-term program field envelope that can swamp the bias
 
   // User-facing parameters (stored for cook())
   private drive = 0.5;
@@ -46,8 +42,6 @@ export class HysteresisProcessor {
 
   // Sample period
   private readonly T: number;
-  private readonly biasProgramAttackCoeff: number;
-  private readonly biasProgramReleaseCoeff: number;
 
   // State variables
   private M_n1 = 0; // previous magnetization
@@ -56,8 +50,6 @@ export class HysteresisProcessor {
 
   constructor(sampleRate: number) {
     this.T = 1.0 / sampleRate;
-    this.biasProgramAttackCoeff = Math.exp(-1 / (sampleRate * 0.00025));
-    this.biasProgramReleaseCoeff = Math.exp(-1 / (sampleRate * 0.006));
     this.cook();
   }
 
@@ -78,15 +70,6 @@ export class HysteresisProcessor {
    */
   setBaseC(v: number): void {
     this.baseC = Math.max(0.01, Math.min(0.5, v));
-  }
-
-  /**
-   * Set the machine's aligned bias point. Above this point, additional bias
-   * should mostly yield HF loss in the bias contour stage, not unlimited extra
-   * linearization in the hysteresis core.
-   */
-  setNominalBias(v: number): void {
-    this.nominalBias = clamp(v, 0, 1);
   }
 
   /**
@@ -121,37 +104,17 @@ export class HysteresisProcessor {
     this.alpha = Math.max(1e-4, Math.min(5e-3, v));
   }
 
-  private effectiveBiasAmplitude(): number {
-    const nominal = Math.max(1e-6, this.nominalBias);
-    if (this.biasAmplitude <= nominal) return this.biasAmplitude;
-    return nominal + (this.biasAmplitude - nominal) * 0.25;
-  }
-
   private computeAdaptiveCFromField(fieldMagnitude: number): number {
-    const effectiveBias = this.effectiveBiasAmplitude();
-    const bSq = effectiveBias * effectiveBias;
+    const bSq = this.biasAmplitude * this.biasAmplitude;
     const denomSq = bSq + fieldMagnitude * fieldMagnitude;
     if (denomSq < 1e-20) return this.baseC;
-    return this.baseC + (C_MAX - this.baseC) * effectiveBias / Math.sqrt(denomSq);
+    return this.baseC + (C_MAX - this.baseC) * this.biasAmplitude / Math.sqrt(denomSq);
   }
 
   /** Returns the effective c for a given H value (adaptive if bias mode, flat otherwise). */
   getEffectiveC(H: number): number {
     if (!this.biasActive) return this.c;
     return this.computeAdaptiveCFromField(Math.abs(H));
-  }
-
-  private computeBiasProgramExcess(programField: number): number {
-    return Math.max(0, programField - this.effectiveBiasAmplitude() * BIAS_PROGRAM_STARVATION_THRESHOLD)
-      * BIAS_PROGRAM_EXCESS_WEIGHT;
-  }
-
-  private updateBiasProgramField(fieldMagnitude: number): number {
-    const coeff = fieldMagnitude > this.biasProgramField
-      ? this.biasProgramAttackCoeff
-      : this.biasProgramReleaseCoeff;
-    this.biasProgramField = this.biasProgramField * coeff + fieldMagnitude * (1 - coeff);
-    return this.biasProgramField;
   }
 
   private cook(): void {
@@ -189,19 +152,15 @@ export class HysteresisProcessor {
     const H_mid = (H + this.H_n1) * 0.5;
     const H_d_mid = (H_d + this.H_d_n1) * 0.5;
 
-    const prevProgramField = this.biasProgramField;
-    const currentProgramField = this.updateBiasProgramField(Math.abs(H));
-    const midProgramField = 0.5 * (prevProgramField + currentProgramField);
-
     // Compute effective c at each RK4 evaluation point.
     const c1 = this.biasActive
-      ? this.computeAdaptiveCFromField(Math.max(Math.abs(this.H_n1), this.computeBiasProgramExcess(prevProgramField)))
+      ? this.computeAdaptiveCFromField(Math.abs(this.H_n1))
       : this.c;
     const cMid = this.biasActive
-      ? this.computeAdaptiveCFromField(Math.max(Math.abs(H_mid), this.computeBiasProgramExcess(midProgramField)))
+      ? this.computeAdaptiveCFromField(Math.abs(H_mid))
       : this.c;
     const c4 = this.biasActive
-      ? this.computeAdaptiveCFromField(Math.max(Math.abs(H), this.computeBiasProgramExcess(currentProgramField)))
+      ? this.computeAdaptiveCFromField(Math.abs(H))
       : this.c;
 
     // RK4 integration
@@ -241,7 +200,6 @@ export class HysteresisProcessor {
     this.M_n1 = 0;
     this.H_n1 = 0;
     this.H_d_n1 = 0;
-    this.biasProgramField = 0;
   }
 
   /** Returns 0-1 indicating how close magnetization is to saturation. */

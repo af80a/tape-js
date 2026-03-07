@@ -53,7 +53,6 @@ const TWO_PI = 2 * Math.PI;
 const MAX_AZIMUTH_ARCMIN = 30;
 const MAX_WEAVE_ARCMIN = 5;
 const MAX_TRACK_INTEGRATION_TAPS = 33;
-const WEAVE_CONTACT_COUPLING = 0.05;
 
 // 1 arcminute in radians
 const ARCMIN_TO_RAD = Math.PI / (180 * 60);
@@ -170,9 +169,7 @@ export class AzimuthModel {
     return {
       theta,
       tanTheta: Math.tan(theta),
-      // Tape weave can slightly vary contact/spacing as the tape wanders over the head.
-      // Keep this much smaller than true dropouts so mastering-safe weave remains subtle.
-      contactSpacing: this.trackWidth * Math.abs(drift) * WEAVE_CONTACT_COUPLING,
+      contactSpacing: 0,
     };
   }
 

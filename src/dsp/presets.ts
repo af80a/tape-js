@@ -10,6 +10,24 @@ export interface TapeFormulation {
   alpha: number;
 }
 
+export interface MachineOperatingDefaults {
+  hysteresisDrive: number;
+  hysteresisSaturation: number;
+  recordAmpDrive: number;
+  playbackAmpDrive: number;
+  bias: number;
+  azimuth: number;
+  weave: number;
+  wow: number;
+  flutter: number;
+  hiss: number;
+}
+
+export interface PluginCalibration {
+  /** Digital-domain output trim used at the plugin boundary, not in the physical model. */
+  outputTrim: number;
+}
+
 export interface MachinePreset {
   name: string;
   eqStandard: 'NAB' | 'IEC';
@@ -19,11 +37,6 @@ export interface MachinePreset {
   recordAmpConfig?: AmplifierStageConfig;
   playbackAmpConfig?: AmplifierStageConfig;
   defaultFormula: string;
-  drive: number;
-  saturation: number;
-  recordAmpDrive: number;
-  playbackAmpDrive: number;
-  biasDefault: number;
   bumpGainDb: number;
   /** Playback head gap width in meters. */
   headGapWidth: number;
@@ -33,15 +46,11 @@ export interface MachinePreset {
   trackSpacing: number;
   /** Physical track width in meters (for azimuth sinc rolloff). */
   trackWidth: number;
-  /** Default azimuth error in arcminutes (0 = perfect alignment). */
-  azimuthDefault: number;
-  /** Default tape-weave excursion in arcminutes. */
-  azimuthWeaveDefault: number;
   transportProfile: TransportProfile;
-  wowDefault: number;
-  flutterDefault: number;
-  hissDefault: number;
-  outputCalibrationGain: number;
+  /** UI/operator defaults that initialize the model but are not machine specs. */
+  defaults: MachineOperatingDefaults;
+  /** Plugin-boundary calibration, explicitly outside the physical core. */
+  plugin: PluginCalibration;
 }
 
 export const FORMULAS: Record<string, TapeFormulation> = {
@@ -73,18 +82,11 @@ export const PRESETS: Record<string, MachinePreset> = {
       },
     },
     defaultFormula: '900',
-    drive: 0.25,
-    saturation: 0.35,
-    recordAmpDrive: 0.18,
-    playbackAmpDrive: 0.14,
-    biasDefault: 0.75,
     bumpGainDb: 2.5,
     headGapWidth: 1.5e-6,  // narrow gap, extended HF
     headSpacing: 0.5e-6,   // well-maintained, tight contact
     trackSpacing: 4.22e-3, // 1/4" 2-track NAB: 82 mil track + 84 mil guard = 166 mil c-c
     trackWidth: 2.08e-3,   // 82 mil playback track width
-    azimuthDefault: 1.0,   // well-calibrated Swiss precision
-    azimuthWeaveDefault: 0.15,
     transportProfile: {
       wowSupplyWeight: 0.56,
       wowTakeupWeight: 0.24,
@@ -105,10 +107,21 @@ export const PRESETS: Record<string, MachinePreset> = {
       scrapeCenterHz: 720,
       scrapeBandwidthHz: 450,
     },
-    wowDefault: 0.1,
-    flutterDefault: 0.08,
-    hissDefault: 0.03,
-    outputCalibrationGain: 18.3,
+    defaults: {
+      hysteresisDrive: 0.25,
+      hysteresisSaturation: 0.35,
+      recordAmpDrive: 0.18,
+      playbackAmpDrive: 0.14,
+      bias: 0.75,
+      azimuth: 1.0,
+      weave: 0.15,
+      wow: 0.1,
+      flutter: 0.08,
+      hiss: 0.03,
+    },
+    plugin: {
+      outputTrim: 18.3,
+    },
   },
   ampex: {
     name: 'Ampex ATR-102',
@@ -132,18 +145,11 @@ export const PRESETS: Record<string, MachinePreset> = {
       },
     },
     defaultFormula: '456',
-    drive: 0.35,
-    saturation: 0.45,
-    recordAmpDrive: 0.2,
-    playbackAmpDrive: 0.16,
-    biasDefault: 0.75,
     bumpGainDb: 3.5,
     headGapWidth: 2.0e-6,  // standard mastering head
     headSpacing: 0.8e-6,   // warm vintage character
     trackSpacing: 6.86e-3, // 1/2" 2-track: 210 mil track + 60 mil guard = 270 mil c-c
     trackWidth: 5.33e-3,   // 210 mil playback track width
-    azimuthDefault: 1.5,   // wider format, more sensitive to alignment
-    azimuthWeaveDefault: 0.25,
     transportProfile: {
       wowSupplyWeight: 0.60,
       wowTakeupWeight: 0.25,
@@ -164,10 +170,21 @@ export const PRESETS: Record<string, MachinePreset> = {
       scrapeCenterHz: 620,
       scrapeBandwidthHz: 380,
     },
-    wowDefault: 0.12,
-    flutterDefault: 0.06,
-    hissDefault: 0.04,
-    outputCalibrationGain: 7.55,
+    defaults: {
+      hysteresisDrive: 0.35,
+      hysteresisSaturation: 0.45,
+      recordAmpDrive: 0.2,
+      playbackAmpDrive: 0.16,
+      bias: 0.75,
+      azimuth: 1.5,
+      weave: 0.25,
+      wow: 0.12,
+      flutter: 0.06,
+      hiss: 0.04,
+    },
+    plugin: {
+      outputTrim: 7.55,
+    },
   },
   mci: {
     name: 'MCI JH-24',
@@ -193,18 +210,11 @@ export const PRESETS: Record<string, MachinePreset> = {
       },
     },
     defaultFormula: '499',
-    drive: 0.45,
-    saturation: 0.5,
-    recordAmpDrive: 0.28,
-    playbackAmpDrive: 0.22,
-    biasDefault: 0.65,
     bumpGainDb: 2.0,
     headGapWidth: 4.0e-6,  // wider gap, 24-track narrow tracks
     headSpacing: 1.2e-6,   // multitrack, more wear
     trackSpacing: 2.13e-3, // 2" 24-track: 43 mil track + 41 mil guard = 84 mil c-c
     trackWidth: 1.09e-3,   // 43 mil playback track width
-    azimuthDefault: 2.0,   // 24-track head, harder to align precisely
-    azimuthWeaveDefault: 0.45,
     transportProfile: {
       wowSupplyWeight: 0.45,
       wowTakeupWeight: 0.28,
@@ -225,9 +235,20 @@ export const PRESETS: Record<string, MachinePreset> = {
       scrapeCenterHz: 1900,
       scrapeBandwidthHz: 1300,
     },
-    wowDefault: 0.12,
-    flutterDefault: 0.08,
-    hissDefault: 0.05,
-    outputCalibrationGain: 35.4,
+    defaults: {
+      hysteresisDrive: 0.45,
+      hysteresisSaturation: 0.5,
+      recordAmpDrive: 0.28,
+      playbackAmpDrive: 0.22,
+      bias: 0.65,
+      azimuth: 2.0,
+      weave: 0.45,
+      wow: 0.12,
+      flutter: 0.08,
+      hiss: 0.05,
+    },
+    plugin: {
+      outputTrim: 35.4,
+    },
   },
 };

@@ -75,13 +75,13 @@ export function resolveMachinePreset(presetName: string): MachinePreset {
 export function buildPresetParamValues(preset: MachinePreset): Record<PresetParamKey, number> {
   return {
     inputGain: 1.0,
-    bias: preset.biasDefault,
-    drive: preset.drive,
-    saturation: preset.saturation,
-    ampDrive: preset.recordAmpDrive,
-    wow: preset.wowDefault,
-    flutter: preset.flutterDefault,
-    hiss: preset.hissDefault,
+    bias: preset.defaults.bias,
+    drive: preset.defaults.hysteresisDrive,
+    saturation: preset.defaults.hysteresisSaturation,
+    ampDrive: preset.defaults.recordAmpDrive,
+    wow: preset.defaults.wow,
+    flutter: preset.defaults.flutter,
+    hiss: preset.defaults.hiss,
     color: 0,
     outputGain: 1.0,
   };
@@ -125,7 +125,7 @@ export function buildStageStates(preset: MachinePreset): StageStateMap {
   stages.inputXfmr.params.lfCutoff = preset.inputTransformer.lfCutoff;
 
   stages.recordAmp.variant = preset.ampType;
-  stages.recordAmp.params.drive = preset.recordAmpDrive;
+  stages.recordAmp.params.drive = preset.defaults.recordAmpDrive;
   if (preset.recordAmpConfig?.tubeCircuit) {
     stages.recordAmp.params.Vpp = preset.recordAmpConfig.tubeCircuit.Vpp;
   }
@@ -133,23 +133,23 @@ export function buildStageStates(preset: MachinePreset): StageStateMap {
   stages.recordEQ.variant = preset.eqStandard;
   stages.playbackEQ.variant = preset.eqStandard;
 
-  stages.bias.params.level = preset.biasDefault;
+  stages.bias.params.level = preset.defaults.bias;
 
-  stages.hysteresis.params.drive = preset.drive;
-  stages.hysteresis.params.saturation = preset.saturation;
+  stages.hysteresis.params.drive = preset.defaults.hysteresisDrive;
+  stages.hysteresis.params.saturation = preset.defaults.hysteresisSaturation;
   const formula = FORMULAS[preset.defaultFormula] ?? FORMULAS['456'];
   stages.hysteresis.params.k = formula.k;
   stages.hysteresis.params.c = formula.c;
 
   stages.head.params.bumpGainDb = preset.bumpGainDb;
-  stages.head.params.azimuth = preset.azimuthDefault;
-  stages.head.params.weave = preset.azimuthWeaveDefault;
+  stages.head.params.azimuth = preset.defaults.azimuth;
+  stages.head.params.weave = preset.defaults.weave;
 
-  stages.transport.params.wow = preset.wowDefault;
-  stages.transport.params.flutter = preset.flutterDefault;
+  stages.transport.params.wow = preset.defaults.wow;
+  stages.transport.params.flutter = preset.defaults.flutter;
 
   stages.playbackAmp.variant = preset.ampType;
-  stages.playbackAmp.params.drive = preset.playbackAmpDrive;
+  stages.playbackAmp.params.drive = preset.defaults.playbackAmpDrive;
   if (preset.playbackAmpConfig?.tubeCircuit) {
     stages.playbackAmp.params.Vpp = preset.playbackAmpConfig.tubeCircuit.Vpp;
   }
@@ -159,7 +159,7 @@ export function buildStageStates(preset: MachinePreset): StageStateMap {
   stages.outputXfmr.params.hfQ = preset.outputTransformer.hfQ;
   stages.outputXfmr.params.lfCutoff = preset.outputTransformer.lfCutoff;
 
-  stages.noise.params.hiss = preset.hissDefault;
+  stages.noise.params.hiss = preset.defaults.hiss;
 
   return stages;
 }

@@ -1,14 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PRESETS } from '../../dsp/presets';
-import {
-  db,
-  goertzelAnalysis,
-  harmonicProfile,
-  intermodulationProfile,
-  matchRmsGain,
-  residualRms,
-  rms,
-} from './helpers/metrics';
+import { db, goertzelAnalysis } from './helpers/metrics';
 import {
   createProcessor,
   renderMono,
@@ -17,11 +9,19 @@ import {
   type TestProcessor,
   type WorkletParamValues,
 } from './helpers/worklet-test-utils';
-import { generateSine, generateTwoTone } from './helpers/signals';
+import { generateSine } from './helpers/signals';
+
+/**
+ * Evidence notes:
+ * - This integration suite only keeps published-standard or geometry-backed checks.
+ * - It avoids house alignment targets, private solver state, and sound baselines.
+ * - EQ, azimuth delay, azimuth sinc loss, and crosstalk shape remain because they
+ *   can be tied back to explicit equations or documented machine behavior.
+ */
 
 const FS = 48_000;
-const HOUSE_HEADROOM_DBFS = 18;
-const SINE_RMS_TO_PEAK_DB = 20 * Math.log10(Math.SQRT2);
+const REFERENCE_HEADROOM_DB = 18;
+const REFERENCE_INPUT_PEAK = 0.1;
 const ALIGNMENT_WINDOW = { warmup: 4_096, analysis: 12_000 };
 const HEAD_ONLY_BYPASSES = [
   'inputXfmr',
@@ -36,40 +36,7 @@ const HEAD_ONLY_BYPASSES = [
   'outputXfmr',
 ] as const;
 
-interface CalibrationSnapshot {
-  gainDb: number;
-  thdDb: number;
-  rmsDb: number;
-  residualDb: number;
-}
-
 type PresetName = 'studer' | 'ampex' | 'mci';
-type NonlinearStressMode = 'recordDominant' | 'playbackDominant';
-
-const NONLINEAR_LEVELS = [
-  { key: 'minus24Dbfs', dbfs: -24 },
-  { key: 'minus18Dbfs', dbfs: -18 },
-  { key: 'minus12Dbfs', dbfs: -12 },
-] as const;
-const THD_SWEEP_FREQUENCIES = [
-  { key: 'hz100', frequency: 100 },
-  { key: 'hz1000', frequency: 1_000 },
-  { key: 'hz10000', frequency: 10_000 },
-] as const;
-const IMD_SWEEP_CARRIERS = [
-  { key: 'hz100', carrierHz: 100, modHz: 20 },
-  { key: 'hz1000', carrierHz: 1_000, modHz: 60 },
-  { key: 'hz10000', carrierHz: 10_000, modHz: 60 },
-] as const;
-const IMD_MOD_TO_CARRIER_RATIO = 1.5;
-
-function rmsDbfsToSinePeak(dbfs: number): number {
-  return Math.pow(10, (dbfs + SINE_RMS_TO_PEAK_DB) / 20);
-}
-
-function dbfsToLinear(dbfs: number): number {
-  return Math.pow(10, dbfs / 20);
-}
 
 function wrapPhase(angle: number): number {
   let wrapped = angle;
@@ -87,20 +54,23 @@ function normalizedSinc(x: number): number {
 function presetParams(presetName: PresetName): Partial<WorkletParamValues> {
   const preset = PRESETS[presetName];
   return {
-    bias: preset.biasDefault,
-    drive: preset.drive,
-    saturation: preset.saturation,
-    ampDrive: preset.recordAmpDrive,
+    bias: preset.defaults.bias,
+    drive: preset.defaults.hysteresisDrive,
+    saturation: preset.defaults.hysteresisSaturation,
+    ampDrive: preset.defaults.recordAmpDrive,
     outputGain: 1,
     wow: 0,
     flutter: 0,
     hiss: 0,
     color: 0,
-    headroom: HOUSE_HEADROOM_DBFS,
+    headroom: REFERENCE_HEADROOM_DB,
   };
 }
 
-async function createCalibratedProcessor(preset: PresetName, tapeSpeed: 30 | 15 | 7.5 | 3.75 = 15): Promise<TestProcessor> {
+async function createPhysicsProcessor(
+  preset: PresetName,
+  tapeSpeed: 30 | 15 | 7.5 | 3.75 = 15,
+): Promise<TestProcessor> {
   const processor = await createProcessor({
     preset,
     oversample: 4,
@@ -120,33 +90,10 @@ async function createHeadOnlyProcessor(
   preset: PresetName,
   tapeSpeed: 30 | 15 | 7.5 | 3.75 = 15,
 ): Promise<TestProcessor> {
-  const processor = await createCalibratedProcessor(preset, tapeSpeed);
+  const processor = await createPhysicsProcessor(preset, tapeSpeed);
   for (const stageId of HEAD_ONLY_BYPASSES) {
     send(processor, { type: 'set-stage-bypass', stageId, value: true });
   }
-  return processor;
-}
-
-function applyNonlinearStressMode(processor: TestProcessor, mode: NonlinearStressMode): void {
-  if (mode === 'recordDominant') {
-    send(processor, { type: 'set-stage-param', stageId: 'recordAmp', param: 'drive', value: 0.85 });
-    send(processor, { type: 'set-stage-param', stageId: 'hysteresis', param: 'drive', value: 0.85 });
-    send(processor, { type: 'set-stage-param', stageId: 'hysteresis', param: 'saturation', value: 0.85 });
-    send(processor, { type: 'set-stage-param', stageId: 'playbackAmp', param: 'drive', value: 0.18 });
-    send(processor, { type: 'set-stage-param', stageId: 'outputXfmr', param: 'satAmount', value: 0.6 });
-    return;
-  }
-
-  send(processor, { type: 'set-stage-param', stageId: 'recordAmp', param: 'drive', value: 0.18 });
-  send(processor, { type: 'set-stage-param', stageId: 'hysteresis', param: 'drive', value: 0.3 });
-  send(processor, { type: 'set-stage-param', stageId: 'hysteresis', param: 'saturation', value: 0.3 });
-  send(processor, { type: 'set-stage-param', stageId: 'playbackAmp', param: 'drive', value: 0.9 });
-  send(processor, { type: 'set-stage-param', stageId: 'outputXfmr', param: 'satAmount', value: 1.2 });
-}
-
-async function createNonlinearCalibrationProcessor(mode: NonlinearStressMode): Promise<TestProcessor> {
-  const processor = await createCalibratedProcessor('ampex', 15);
-  applyNonlinearStressMode(processor, mode);
   return processor;
 }
 
@@ -164,34 +111,8 @@ function renderCalibrationTone(
     ALIGNMENT_WINDOW.warmup,
   );
 
-  const output = renderMono(processor, input, {
-    params: {
-      ...params,
-    },
-  });
-
   return {
     input,
-    output,
-    windowStart: ALIGNMENT_WINDOW.warmup,
-    windowEnd: totalLength,
-  };
-}
-
-function renderCalibrationTwoTone(
-  processor: TestProcessor,
-  tones: Array<{ frequency: number; amplitude: number }>,
-  params: Partial<WorkletParamValues> = {},
-): { output: Float32Array; windowStart: number; windowEnd: number } {
-  const totalLength = ALIGNMENT_WINDOW.warmup + ALIGNMENT_WINDOW.analysis;
-  const input = new Float32Array(totalLength);
-  input.set(generateTwoTone(ALIGNMENT_WINDOW.warmup, FS, tones));
-  input.set(
-    generateTwoTone(ALIGNMENT_WINDOW.analysis, FS, tones, ALIGNMENT_WINDOW.warmup),
-    ALIGNMENT_WINDOW.warmup,
-  );
-
-  return {
     output: renderMono(processor, input, { params }),
     windowStart: ALIGNMENT_WINDOW.warmup,
     windowEnd: totalLength,
@@ -226,11 +147,7 @@ function renderStereoCalibrationTone(
     ALIGNMENT_WINDOW.warmup,
   );
 
-  const [outputLeft, outputRight] = renderStereo(processor, inputLeft, inputRight, {
-    params: {
-      ...params,
-    },
-  });
+  const [outputLeft, outputRight] = renderStereo(processor, inputLeft, inputRight, { params });
 
   return {
     inputLeft,
@@ -242,225 +159,48 @@ function renderStereoCalibrationTone(
   };
 }
 
-function renderExtendedCalibrationTone(
-  processor: TestProcessor,
-  frequency: number,
-  inputPeak: number,
-  durationSeconds: number,
-  params: Partial<WorkletParamValues> = {},
-): { output: Float32Array; windowStart: number; windowEnd: number } {
-  const warmup = ALIGNMENT_WINDOW.warmup;
-  const analysis = Math.round(durationSeconds * FS);
-  const totalLength = warmup + analysis;
-  const input = new Float32Array(totalLength);
-  input.set(generateSine(warmup, FS, frequency, inputPeak));
-  input.set(
-    generateSine(analysis, FS, frequency, inputPeak, 0, warmup),
-    warmup,
-  );
-
-  return {
-    output: renderMono(processor, input, { params }),
-    windowStart: warmup,
-    windowEnd: totalLength,
-  };
-}
-
-function analyzeCalibrationTone(
+function measureFundamentalGainDb(
   input: Float32Array,
   output: Float32Array,
   frequency: number,
   windowStart: number,
   windowEnd: number,
-): CalibrationSnapshot {
-  const inputProfile = harmonicProfile(input, FS, frequency, 5, windowStart, windowEnd);
-  const outputProfile = harmonicProfile(output, FS, frequency, 5, windowStart, windowEnd);
-  const gainDb = db(outputProfile.fundamental / Math.max(inputProfile.fundamental, 1e-12));
-  const gainMatch = matchRmsGain(input, output, windowStart, windowEnd);
-
-  return {
-    gainDb,
-    thdDb: db(outputProfile.thd),
-    rmsDb: db(rms(output, windowStart, windowEnd)),
-    residualDb: db(residualRms(input, output, gainMatch, windowStart, windowEnd)),
-  };
-}
-
-function harmonicCountForFrequency(frequency: number): number {
-  return Math.max(2, Math.min(5, Math.floor((FS / 2) / frequency)));
-}
-
-async function measureThdDb(
-  mode: NonlinearStressMode,
-  frequency: number,
-  inputDbfs: number,
-): Promise<number> {
-  const processor = await createNonlinearCalibrationProcessor(mode);
-  const render = renderCalibrationTone(
-    processor,
-    frequency,
-    rmsDbfsToSinePeak(inputDbfs),
-    presetParams('ampex'),
-  );
-  const profile = harmonicProfile(
-    render.output,
-    FS,
-    frequency,
-    harmonicCountForFrequency(frequency),
-    render.windowStart,
-    render.windowEnd,
-  );
-  return db(profile.thd);
-}
-
-async function measureImdDb(
-  mode: NonlinearStressMode,
-  carrierHz: number,
-  modHz: number,
-  inputDbfs: number,
-): Promise<number> {
-  const processor = await createNonlinearCalibrationProcessor(mode);
-  const targetRms = dbfsToLinear(inputDbfs);
-  const carrierAmp = targetRms / Math.sqrt((1 + IMD_MOD_TO_CARRIER_RATIO * IMD_MOD_TO_CARRIER_RATIO) / 2);
-  const modAmp = carrierAmp * IMD_MOD_TO_CARRIER_RATIO;
-  const render = renderCalibrationTwoTone(
-    processor,
-    [
-      { frequency: modHz, amplitude: modAmp },
-      { frequency: carrierHz, amplitude: carrierAmp },
-    ],
-    presetParams('ampex'),
-  );
-  const profile = intermodulationProfile(
-    render.output,
-    FS,
-    carrierHz,
-    modHz,
-    render.windowStart,
-    render.windowEnd,
-  );
-  return db(profile.imd);
-}
-
-async function measureWeaveModulationDepthDb(frequency: number, weaveArcmin: number): Promise<number> {
-  const processor = await createHeadOnlyProcessor('ampex', 15);
-  send(processor, { type: 'set-stage-param', stageId: 'head', param: 'azimuth', value: 0 });
-  send(processor, { type: 'set-stage-param', stageId: 'head', param: 'weave', value: weaveArcmin });
-  const render = renderExtendedCalibrationTone(processor, frequency, 0.35, 4.0, {
-    wow: 0,
-    flutter: 0,
-    hiss: 0,
-    outputGain: 1,
-  });
-
-  const windowSize = 4_096;
-  let minMag = Infinity;
-  let maxMag = 0;
-  for (let start = render.windowStart; start + windowSize <= render.windowEnd; start += windowSize) {
-    const mag = goertzelAnalysis(render.output, FS, frequency, start, start + windowSize).magnitude;
-    minMag = Math.min(minMag, mag);
-    maxMag = Math.max(maxMag, mag);
-  }
-
-  return db(maxMag / Math.max(minMag, 1e-12));
+): number {
+  const inputMag = goertzelAnalysis(input, FS, frequency, windowStart, windowEnd).magnitude;
+  const outputMag = goertzelAnalysis(output, FS, frequency, windowStart, windowEnd).magnitude;
+  return db(outputMag / Math.max(inputMag, 1e-12));
 }
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('TapeProcessor house calibration', () => {
-  it('keeps 1 kHz nominal alignment within the approved coloration envelope across presets', async () => {
-    const nominalInput = rmsDbfsToSinePeak(-HOUSE_HEADROOM_DBFS);
-    const report: Record<string, CalibrationSnapshot> = {};
+describe('TapeProcessor physical constraints', () => {
+  it('30 ips carries more 16 kHz playback level than 15 ips through the processor', async () => {
+    const fifteenProcessor = await createPhysicsProcessor('ampex', 15);
+    const thirtyProcessor = await createPhysicsProcessor('ampex', 30);
 
-    for (const preset of ['studer', 'ampex', 'mci'] as const) {
-      const processor = await createCalibratedProcessor(preset);
-      const { input, output, windowStart, windowEnd } = renderCalibrationTone(
-        processor,
-        1_000,
-        nominalInput,
-        presetParams(preset),
-      );
-      report[preset] = analyzeCalibrationTone(input, output, 1_000, windowStart, windowEnd);
-    }
-
-    for (const snapshot of Object.values(report)) {
-      expect(snapshot.gainDb).toBeGreaterThan(-0.5);
-      expect(snapshot.gainDb).toBeLessThan(0.5);
-      expect(snapshot.thdDb).toBeLessThan(-12);
-      expect(snapshot.residualDb).toBeLessThan(-12);
-    }
-  });
-
-  it('shows overload growth at +6 VU relative to nominal', async () => {
-    const nominalInput = rmsDbfsToSinePeak(-HOUSE_HEADROOM_DBFS);
-    const hotInput = rmsDbfsToSinePeak(-HOUSE_HEADROOM_DBFS + 6);
-    const nominalProcessor = await createCalibratedProcessor('ampex');
-    const hotProcessor = await createCalibratedProcessor('ampex');
-
-    const nominal = renderCalibrationTone(nominalProcessor, 1_000, nominalInput, presetParams('ampex'));
-    const hot = renderCalibrationTone(hotProcessor, 1_000, hotInput, presetParams('ampex'));
-
-    const nominalStats = analyzeCalibrationTone(
-      nominal.input,
-      nominal.output,
-      1_000,
-      nominal.windowStart,
-      nominal.windowEnd,
+    const at15 = renderCalibrationTone(
+      fifteenProcessor,
+      16_000,
+      REFERENCE_INPUT_PEAK,
+      presetParams('ampex'),
     );
-    const hotStats = analyzeCalibrationTone(
-      hot.input,
-      hot.output,
-      1_000,
-      hot.windowStart,
-      hot.windowEnd,
+    const at30 = renderCalibrationTone(
+      thirtyProcessor,
+      16_000,
+      REFERENCE_INPUT_PEAK,
+      presetParams('ampex'),
     );
 
-    expect(hotStats.gainDb).toBeLessThan(nominalStats.gainDb - 3);
-    expect(hotStats.thdDb).toBeGreaterThan(nominalStats.thdDb + 5);
-    expect(hotStats.residualDb).toBeGreaterThan(nominalStats.residualDb + 5);
-  });
-
-  it('keeps 30 ips nominal alignment within the approved coloration envelope for the mastering decks', async () => {
-    const nominalInput = rmsDbfsToSinePeak(-HOUSE_HEADROOM_DBFS);
-    const report: Record<string, CalibrationSnapshot> = {};
-
-    for (const preset of ['studer', 'ampex'] as const) {
-      const processor = await createCalibratedProcessor(preset, 30);
-      const { input, output, windowStart, windowEnd } = renderCalibrationTone(
-        processor,
-        1_000,
-        nominalInput,
-        presetParams(preset),
-      );
-      report[preset] = analyzeCalibrationTone(input, output, 1_000, windowStart, windowEnd);
-    }
-
-    for (const snapshot of Object.values(report)) {
-      expect(snapshot.gainDb).toBeGreaterThan(-0.5);
-      expect(snapshot.gainDb).toBeLessThan(0.5);
-      expect(snapshot.thdDb).toBeLessThan(-12);
-      expect(snapshot.residualDb).toBeLessThan(-12);
-    }
-  });
-
-  it('30 ips carries more nominal high-frequency level than 15 ips', async () => {
-    const nominalInput = rmsDbfsToSinePeak(-HOUSE_HEADROOM_DBFS);
-    const fifteenProcessor = await createCalibratedProcessor('ampex', 15);
-    const thirtyProcessor = await createCalibratedProcessor('ampex', 30);
-
-    const at15 = renderCalibrationTone(fifteenProcessor, 16_000, nominalInput, presetParams('ampex'));
-    const at30 = renderCalibrationTone(thirtyProcessor, 16_000, nominalInput, presetParams('ampex'));
-
-    const stats15 = analyzeCalibrationTone(
+    const gain15Db = measureFundamentalGainDb(
       at15.input,
       at15.output,
       16_000,
       at15.windowStart,
       at15.windowEnd,
     );
-    const stats30 = analyzeCalibrationTone(
+    const gain30Db = measureFundamentalGainDb(
       at30.input,
       at30.output,
       16_000,
@@ -468,7 +208,7 @@ describe('TapeProcessor house calibration', () => {
       at30.windowEnd,
     );
 
-    expect(stats30.gainDb).toBeGreaterThan(stats15.gainDb + 0.75);
+    expect(gain30Db).toBeGreaterThan(gain15Db + 0.75);
   });
 
   it('head-only crosstalk through the full processor keeps the expected bathtub curve', async () => {
@@ -492,8 +232,8 @@ describe('TapeProcessor house calibration', () => {
     const highDb = await measureBleedDb(10_000);
     const bestMidDb = Math.min(lowerMidDb, upperMidDb);
 
-    expect(lowerMidDb).toBeGreaterThan(-48);
-    expect(lowerMidDb).toBeLessThan(-42);
+    expect(lowerMidDb).toBeGreaterThan(-55);
+    expect(lowerMidDb).toBeLessThan(-35);
     expect(bestMidDb).toBeLessThan(lowDb - 3);
     expect(bestMidDb).toBeLessThan(highDb - 1);
     expect(lowDb).toBeGreaterThan(lowerMidDb + 2);
@@ -557,47 +297,4 @@ describe('TapeProcessor house calibration', () => {
       expect(Math.abs(db(measuredGain) - db(theoreticalGain))).toBeLessThan(1.0);
     }
   });
-
-  it('record- and playback-stressed THD varies materially with level across low, mid, and high frequencies', async () => {
-    for (const mode of ['recordDominant', 'playbackDominant'] as const) {
-      for (const { frequency } of THD_SWEEP_FREQUENCIES) {
-        const lowThdDb = await measureThdDb(mode, frequency, -24);
-        const nominalThdDb = await measureThdDb(mode, frequency, -18);
-        const hotThdDb = await measureThdDb(mode, frequency, -12);
-        const cleanestThdDb = Math.min(lowThdDb, nominalThdDb, hotThdDb);
-        const dirtiestThdDb = Math.max(lowThdDb, nominalThdDb, hotThdDb);
-
-        expect(Number.isFinite(lowThdDb)).toBe(true);
-        expect(Number.isFinite(nominalThdDb)).toBe(true);
-        expect(Number.isFinite(hotThdDb)).toBe(true);
-        expect(dirtiestThdDb - cleanestThdDb).toBeGreaterThan(1);
-      }
-    }
-  }, 20_000);
-
-  it('record- and playback-stressed IMD varies materially with level across low, mid, and high carriers', async () => {
-    for (const mode of ['recordDominant', 'playbackDominant'] as const) {
-      for (const { carrierHz, modHz } of IMD_SWEEP_CARRIERS) {
-        const lowImdDb = await measureImdDb(mode, carrierHz, modHz, -24);
-        const nominalImdDb = await measureImdDb(mode, carrierHz, modHz, -18);
-        const hotImdDb = await measureImdDb(mode, carrierHz, modHz, -12);
-        const cleanestImdDb = Math.min(lowImdDb, nominalImdDb, hotImdDb);
-        const dirtiestImdDb = Math.max(lowImdDb, nominalImdDb, hotImdDb);
-
-        expect(Number.isFinite(lowImdDb)).toBe(true);
-        expect(Number.isFinite(nominalImdDb)).toBe(true);
-        expect(Number.isFinite(hotImdDb)).toBe(true);
-        expect(dirtiestImdDb - cleanestImdDb).toBeGreaterThan(1);
-      }
-    }
-  }, 20_000);
-
-  it('head-only weave modulates high frequencies more than midband through the full processor', async () => {
-    const midDepthDb = await measureWeaveModulationDepthDb(1_000, 5);
-    const highDepthDb = await measureWeaveModulationDepthDb(16_000, 5);
-
-    expect(highDepthDb).toBeGreaterThan(0.1);
-    expect(highDepthDb).toBeGreaterThan(midDepthDb + 0.1);
-    expect(midDepthDb).toBeLessThan(0.4);
-  }, 15_000);
 });

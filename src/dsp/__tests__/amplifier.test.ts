@@ -447,7 +447,7 @@ describe('getSaturationDepth', () => {
   });
 });
 
-describe('transistor dynamic bias model', () => {
+describe('transistor stage behavior', () => {
   it('produces asymmetric output (Class-A characteristic)', () => {
     const amp = new AmplifierModel('transistor', 1.0);
     const fs = 48000;
@@ -461,13 +461,17 @@ describe('transistor dynamic bias model', () => {
     expect(Math.abs(Math.abs(posPeak) - Math.abs(negPeak))).toBeGreaterThan(0.01);
   });
 
-  it('bias drifts under sustained asymmetric drive', () => {
-    const amp = new AmplifierModel('transistor', 1.0);
+  it('does not leave a large hidden bias-memory offset after sustained drive', () => {
+    const stressed = new AmplifierModel('transistor', 1.0);
     const fs = 48000;
     for (let i = 0; i < fs * 0.5; i++) {
-      amp.process(0.9 * Math.sin(2 * Math.PI * 100 * i / fs));
+      stressed.process(0.9 * Math.sin(2 * Math.PI * 100 * i / fs));
     }
-    expect(amp.getSaturationDepth()).toBeGreaterThan(0);
+    const fresh = new AmplifierModel('transistor', 1.0);
+    const stressedProbe = stressed.process(0.01);
+    const freshProbe = fresh.process(0.01);
+
+    expect(Math.abs(stressedProbe - freshProbe)).toBeLessThan(0.01);
   });
 
   it('small signals pass through nearly linearly (tanh ≈ x for |x| << 1)', () => {
@@ -477,14 +481,15 @@ describe('transistor dynamic bias model', () => {
     expect(out).toBeCloseTo(0.15, 1);
   });
 
-  it('reset clears bias state', () => {
+  it('reset clears transistor stage state', () => {
     const amp = new AmplifierModel('transistor', 1.0);
     for (let i = 0; i < 5000; i++) {
       amp.process(0.9 * Math.sin(i * 0.1));
     }
     amp.reset();
-    const out = amp.process(0.01);
-    expect(out).toBeCloseTo(Math.tanh(0.01), 2);
+    const resetProbe = amp.process(0.01);
+    const freshProbe = new AmplifierModel('transistor', 1.0).process(0.01);
+    expect(resetProbe).toBeCloseTo(freshProbe, 3);
   });
 });
 
@@ -529,7 +534,7 @@ describe('stage-specific amplifier asymmetry', () => {
     expect(Math.abs(maxRecordSat - maxPlaybackSat)).toBeGreaterThan(0.01);
   });
 
-  it('MCI record and playback transistor voicings produce measurably different bias-memory behavior at equal drive', () => {
+  it('MCI record and playback transistor voicings produce measurably different nonlinear transfer at equal drive', () => {
     const fs = 48_000;
     const drive = 0.75;
     const record = new AmplifierModel(

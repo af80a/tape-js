@@ -1,6 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { HeadModel } from '../head-model';
 
+/**
+ * Evidence notes:
+ * - Gap loss follows sinc(pi * g * f / v) from finite playback-gap averaging.
+ * - Spacing loss follows the Wallace equation exp(-2 * pi * d * f / v).
+ * - These tests prefer analytical comparisons or monotonic geometry changes over
+ *   snapshots of the current implementation.
+ */
+
 describe('HeadModel', () => {
   const fs = 44100;
   const tapeSpeed = 15; // ips
@@ -145,6 +153,21 @@ describe('HeadModel', () => {
 
       // Spacing should add more HF loss
       expect(withSpaceRatio).toBeLessThan(noSpaceRatio);
+    });
+
+    it('spacing-only loss follows the Wallace exponential at high frequency', () => {
+      const frequency = 10_000;
+      const spacing = 5e-6;
+      const clean = new HeadModel(fs, tapeSpeed, { gapWidth: 0, spacing: 0, bumpGainDb: 0 });
+      const spaced = new HeadModel(fs, tapeSpeed, { gapWidth: 0, spacing, bumpGainDb: 0 });
+
+      const cleanPeak = measurePeak(clean, frequency);
+      const spacedPeak = measurePeak(spaced, frequency);
+      const measuredGain = spacedPeak / Math.max(cleanPeak, 1e-12);
+      const tapeSpeedMps = tapeSpeed * 0.0254;
+      const theoreticalGain = Math.exp((-2 * Math.PI * spacing * frequency) / tapeSpeedMps);
+
+      expect(Math.abs(measuredGain - theoreticalGain)).toBeLessThan(0.05);
     });
 
     it('lower tape speed increases HF loss (shorter wavelength at same frequency)', () => {

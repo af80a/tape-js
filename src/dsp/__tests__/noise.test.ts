@@ -26,7 +26,7 @@ describe('TapeNoise', () => {
     }
   });
 
-  describe('signal-dependent modulation noise', () => {
+  describe('stable hiss floor', () => {
     it('process accepts an optional signalLevel parameter', () => {
       const noise = new TapeNoise(fs);
       noise.setLevel(0.5);
@@ -36,9 +36,7 @@ describe('TapeNoise', () => {
       expect(Number.isFinite(y)).toBe(true);
     });
 
-    it('noise RMS is higher with loud signal than with silence', () => {
-      // Modulation noise scales with signal envelope and rate of change (Barkhausen effect):
-      // louder/faster signal = more noise. This is the signature "breathing" grit of tape.
+    it('noise RMS stays broadly consistent with loud signal and silence', () => {
       const noiseLoud = new TapeNoise(fs);
       const noiseSilent = new TapeNoise(fs);
       noiseLoud.setLevel(0.5);
@@ -49,10 +47,9 @@ describe('TapeNoise', () => {
       let sumSqSilent = 0;
 
       for (let i = 0; i < numSamples; i++) {
-        // Use a dynamic sine wave so dH/dt > 0
         const sig = 0.9 * Math.sin(2 * Math.PI * 400 * i / fs);
-        const yLoud = noiseLoud.process(sig);  // loud signal
-        const ySilent = noiseSilent.process(0); // silence
+        const yLoud = noiseLoud.process(sig);
+        const ySilent = noiseSilent.process(0);
         sumSqLoud += yLoud * yLoud;
         sumSqSilent += ySilent * ySilent;
       }
@@ -60,12 +57,12 @@ describe('TapeNoise', () => {
       const rmsLoud = Math.sqrt(sumSqLoud / numSamples);
       const rmsSilent = Math.sqrt(sumSqSilent / numSamples);
 
-      // With modulation noise, loud signal should produce measurably more noise
-      expect(rmsLoud).toBeGreaterThan(rmsSilent * 1.2);
+      const ratio = rmsLoud / rmsSilent;
+      expect(ratio).toBeGreaterThan(0.85);
+      expect(ratio).toBeLessThan(1.15);
     });
 
-    it('modulation noise scales proportionally with signal level', () => {
-      // Modulation noise at signalLevel=0.5 should be roughly half of signalLevel=1.0
+    it('noise floor does not scale materially with signal level', () => {
       const noiseHalf = new TapeNoise(fs);
       const noiseFull = new TapeNoise(fs);
       noiseHalf.setLevel(0.5);
@@ -87,14 +84,9 @@ describe('TapeNoise', () => {
       const rmsHalf = Math.sqrt(sumSqHalf / numSamples);
       const rmsFull = Math.sqrt(sumSqFull / numSamples);
 
-      // Modulation component: rmsHalf should be less than rmsFull
-      // but both include the fixed bias noise floor, so ratio won't be exactly 2:1
-      // Check that louder signal produces more noise
-      expect(rmsFull).toBeGreaterThan(rmsHalf);
-      // And the ratio should be between 1.1x and 3x (not exactly proportional due to bias noise)
       const ratio = rmsFull / rmsHalf;
-      expect(ratio).toBeGreaterThan(1.1);
-      expect(ratio).toBeLessThan(3.0);
+      expect(ratio).toBeGreaterThan(0.85);
+      expect(ratio).toBeLessThan(1.15);
     });
 
     it('backward compatible: process() without argument matches original behavior', () => {

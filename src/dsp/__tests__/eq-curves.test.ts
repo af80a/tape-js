@@ -2,6 +2,13 @@ import { describe, it, expect } from 'vitest';
 import { TapeEQ } from '../eq-curves';
 
 /**
+ * Evidence notes:
+ * - NAB and IEC shelves are derived from published record/playback time constants.
+ * - `30 ips` uses the `17.5 us` mastering curve (AES / IEC2) regardless of UI label.
+ * - These assertions check transfer-shape consequences of those standards, not house tone.
+ */
+
+/**
  * Helper: measure the steady-state peak amplitude of a sine wave
  * after passing through a TapeEQ processor.
  */

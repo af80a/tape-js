@@ -12,6 +12,8 @@ interface InputAlignConfig {
   maxInputGain: number;
 }
 
+// These targets are plugin-side operating alignment presets for different source
+// categories. They are workflow helpers, not claims about machine-reference flux.
 const INPUT_ALIGN_CONFIGS: Record<InputAlignMode, InputAlignConfig> = {
   mix: {
     targetProgramRmsDbfs: -18,

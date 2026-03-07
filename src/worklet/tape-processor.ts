@@ -6,8 +6,6 @@
  */
 
 import { HysteresisProcessor } from '../dsp/hysteresis';
-import { BiasContour } from '../dsp/bias-contour';
-import { WavelengthContour } from '../dsp/wavelength-contour';
 import { TransformerModel } from '../dsp/transformer';
 import { AmplifierModel } from '../dsp/amplifier';
 import { TapeEQ } from '../dsp/eq-curves';
@@ -20,6 +18,12 @@ import { PRESETS, FORMULAS } from '../dsp/presets';
 import type { MachinePreset } from '../dsp/presets';
 import { CrosstalkModel } from '../dsp/crosstalk';
 import { AzimuthModel } from '../dsp/azimuth';
+import {
+  clampAnalogOutput,
+  createOperatingLevelMapping,
+  scalePluginInput,
+  scalePluginOutput,
+} from './plugin-io';
 
 // ---------------------------------------------------------------------------
 // High-resolution timer
@@ -69,7 +73,6 @@ type RecordCouplingMode = 'delayed' | 'predictor';
 const VALID_TAPE_SPEEDS: readonly TapeSpeed[] = [30, 15, 7.5, 3.75];
 const MIN_COUPLING_AMOUNT = 0.25;
 const MAX_COUPLING_AMOUNT = 3.0;
-const COUPLING_LEVEL_MATCH_EXPONENT = 1.0;
 const SATURATION_STAGE_IDS: readonly StageId[] = [
   'inputXfmr',
   'recordAmp',
@@ -86,8 +89,6 @@ interface ChannelDSP {
   inputXfmr: TransformerModel;
   recordAmp: AmplifierModel;
   recordEQ: TapeEQ;
-  biasContour: BiasContour;
-  wavelengthContour: WavelengthContour;
   hysteresis: HysteresisProcessor;
   recordOversampler: Oversampler;
   head: HeadModel;
@@ -331,8 +332,6 @@ class TapeProcessor extends AudioWorkletProcessor {
     this.tapeSpeed = speed;
     for (const dsp of this.channels) {
       dsp.recordEQ.setSpeed(speed);
-      dsp.biasContour.setSpeed(speed);
-      dsp.wavelengthContour.setSpeed(speed);
       dsp.playbackEQ.setSpeed(speed);
       dsp.head.setSpeed(speed);
       dsp.azimuth.setSpeed(speed);
@@ -445,14 +444,13 @@ class TapeProcessor extends AudioWorkletProcessor {
   }
 
   private applyFormulaToTargets(
-    target: Pick<ChannelDSP, 'hysteresis' | 'wavelengthContour'>,
+    target: Pick<ChannelDSP, 'hysteresis'>,
     formulaName: string,
   ): void {
     const formula = FORMULAS[formulaName] ?? FORMULAS['456'];
     target.hysteresis.setK(formula.k);
     target.hysteresis.setBaseC(formula.c);
     target.hysteresis.setAlpha(formula.alpha);
-    target.wavelengthContour.setCoercivity(formula.k);
   }
 
   private applyFormula(formula: string): void {
@@ -464,8 +462,8 @@ class TapeProcessor extends AudioWorkletProcessor {
 
   private rebuildAmplifierStage(stageId: AmplifierStageId, ampType: AmpType): void {
     const drive = stageId === 'recordAmp'
-      ? this.currentPreset.recordAmpDrive
-      : this.currentPreset.playbackAmpDrive;
+      ? this.currentPreset.defaults.recordAmpDrive
+      : this.currentPreset.defaults.playbackAmpDrive;
     for (const dsp of this.channels) {
       if (stageId === 'recordAmp') {
         dsp.recordAmp = this.buildAmplifier(stageId, ampType, drive);
@@ -547,7 +545,6 @@ class TapeProcessor extends AudioWorkletProcessor {
     if (param === 'level') {
       // Bias is applied parametrically to the hysteresis model.
       dsp.hysteresis.setBias(value);
-      dsp.biasContour.setBias(value);
     } else if (param === 'frequency') {
       // Legacy no-op: additive bias oscillator path was removed.
     }
@@ -625,23 +622,12 @@ class TapeProcessor extends AudioWorkletProcessor {
     osFactor: number,
   ): ChannelDSP {
     const inputXfmr = new TransformerModel(fs * osFactor, preset.inputTransformer);
-    const recordAmp = this.buildAmplifier('recordAmp', preset.ampType, preset.recordAmpDrive);
+    const recordAmp = this.buildAmplifier('recordAmp', preset.ampType, preset.defaults.recordAmpDrive);
     const recordEQ = this.buildEq(preset.eqStandard, 'record');
-    const biasContour = new BiasContour(fs * osFactor, this.tapeSpeed, preset.biasDefault);
-    biasContour.setBias(preset.biasDefault);
-
-    const wavelengthContour = new WavelengthContour(fs * osFactor, this.tapeSpeed, preset.headGapWidth);
-    wavelengthContour.setDrive(preset.drive);
-    wavelengthContour.setSaturation(preset.saturation);
-
     const hysteresis = new HysteresisProcessor(fs * osFactor);
-    hysteresis.setDrive(preset.drive);
-    hysteresis.setSaturation(preset.saturation);
-    hysteresis.setNominalBias(preset.biasDefault);
-    this.applyFormulaToTargets(
-      { hysteresis, wavelengthContour },
-      this.currentFormula ?? preset.defaultFormula,
-    );
+    hysteresis.setDrive(preset.defaults.hysteresisDrive);
+    hysteresis.setSaturation(preset.defaults.hysteresisSaturation);
+    this.applyFormulaToTargets({ hysteresis }, this.currentFormula ?? preset.defaultFormula);
 
     const recordOversampler = new Oversampler(osFactor, this.renderBlockSize);
     const head = new HeadModel(fs, this.tapeSpeed, {
@@ -656,27 +642,25 @@ class TapeProcessor extends AudioWorkletProcessor {
       preset.trackSpacing,
       preset.trackWidth,
     );
-    azimuth.setAzimuth(preset.azimuthDefault);
-    azimuth.setWeave(preset.azimuthWeaveDefault);
+    azimuth.setAzimuth(preset.defaults.azimuth);
+    azimuth.setWeave(preset.defaults.weave);
 
     const playbackOversampler = new Oversampler(osFactor, this.renderBlockSize);
-    const playbackAmp = this.buildAmplifier('playbackAmp', preset.ampType, preset.playbackAmpDrive);
+    const playbackAmp = this.buildAmplifier('playbackAmp', preset.ampType, preset.defaults.playbackAmpDrive);
     const playbackEQ = this.buildEq(preset.eqStandard, 'playback');
     const outputXfmr = new TransformerModel(fs * osFactor, preset.outputTransformer);
 
     const transport = new TransportModel(fs, channel, preset.transportProfile);
-    transport.setWow(preset.wowDefault);
-    transport.setFlutter(preset.flutterDefault);
+    transport.setWow(preset.defaults.wow);
+    transport.setFlutter(preset.defaults.flutter);
 
     const noise = new TapeNoise(fs, channel);
-    noise.setLevel(preset.hissDefault);
+    noise.setLevel(preset.defaults.hiss);
 
     return {
       inputXfmr,
       recordAmp,
       recordEQ,
-      biasContour,
-      wavelengthContour,
       hysteresis,
       recordOversampler,
       head,
@@ -730,7 +714,7 @@ class TapeProcessor extends AudioWorkletProcessor {
 
     // Initialize crossfade state to match current bypass settings
     this.initializeStageFades();
-    this.smoothedBias = Array(channels).fill(preset.biasDefault);
+    this.smoothedBias = Array(channels).fill(preset.defaults.bias);
     this.delayedIg = Array(channels).fill(0);
     this.delayedTapeSat = Array(channels).fill(0);
     this.delayedPbIg = Array(channels).fill(0);
@@ -937,15 +921,10 @@ class TapeProcessor extends AudioWorkletProcessor {
     const inputBlock = this.inputBlock;
     const factor = this.oversampleFactor > 1 ? this.oversampleFactor : 1;
 
-    // Calculate Headroom scalars (0 VU calibration)
-    // More headroom → less drive (more breathing room before saturation).
-    // At the default (18 dB): inScalar = 10^((36-18)/20) ≈ 7.94, identical to the
-    // previous formula, so existing behaviour at default is preserved.
-    // At max headroom (36 dB): inScalar = 1 (no gain, cleanest).
-    // At min headroom  (6 dB): inScalar ≈ 31.6 (heaviest drive).
-    const maxHeadroomDb = 36; // matches parameterDescriptors maxValue
-    const inScalar  = Math.pow(10, (maxHeadroomDb - headroom) / 20);
-    const outScalar = 1.0 / inScalar;
+    // Plugin-boundary operating-level mapping. This controls how the plugin's
+    // digital signal is presented to the analog model and how the analog-model
+    // output is returned to the plugin domain; it is not part of the machine physics.
+    const ioMapping = createOperatingLevelMapping(headroom);
 
     // Cache ballistics coefficients as locals for inner loop
     const attackCoeff = this.vuAttackCoeff;
@@ -1088,11 +1067,7 @@ class TapeProcessor extends AudioWorkletProcessor {
     const dbgOutNonFinite = this._dbgOutNonFinite;
     const usePredictorCoupling = this.recordCouplingMode === 'predictor';
     const couplingAmount = this.couplingAmount;
-    const presetOutputCalibrationGain = this.currentPreset.outputCalibrationGain;
-    // Dev audition helper: keep coupling sweeps closer in loudness so the
-    // listener can judge interaction character rather than obvious gain loss.
-    // This is intentionally a static output makeup, not part of the physical model.
-    const couplingMakeup = Math.pow(couplingAmount, COUPLING_LEVEL_MATCH_EXPONENT);
+    const pluginOutputTrim = this.currentPreset.plugin.outputTrim;
 
     const _tRecord = _perfNow();
     for (let ch = 0; ch < numChannels; ch++) {
@@ -1118,8 +1093,6 @@ class TapeProcessor extends AudioWorkletProcessor {
       // on the tape magnetization process.
       dsp.hysteresis.setDrive(ovHystDrive ?? drive);
       dsp.hysteresis.setSaturation(ovHystSat ?? saturation);
-      dsp.wavelengthContour.setDrive(ovHystDrive ?? drive);
-      dsp.wavelengthContour.setSaturation(ovHystSat ?? saturation);
       dsp.recordAmp.setDrive(ovRecordAmpDrive ?? ampDrive);
       dsp.recordEQ.setColor(ovRecordEQColor ?? color);
       dsp.playbackAmp.setDrive(ovPlaybackAmpDrive ?? ampDrive * 0.8);
@@ -1129,8 +1102,8 @@ class TapeProcessor extends AudioWorkletProcessor {
 
       // ---- INPUT PREPARATION (base rate) ----
       for (let i = 0; i < blockSize; i++) {
-        // Apply input gain and convert from digital dBFS to analog 0 VU reference level
-        const analogIn = inp[i] * inputGain * inScalar;
+        // Apply plugin-boundary scaling into the analog-model domain.
+        const analogIn = scalePluginInput(inp[i], inputGain, ioMapping);
         inputBlock[i] = analogIn;
         updateStageMeter(slInputXfmr, ch, 0, analogIn);
       }
@@ -1155,7 +1128,6 @@ class TapeProcessor extends AudioWorkletProcessor {
         if (j % factor === 0) {
           smoothedBias[ch] += (targetBias - smoothedBias[ch]) * (1 - biasSmoothCoeff);
           dsp.hysteresis.setBias(smoothedBias[ch]);
-          dsp.biasContour.setBias(smoothedBias[ch]);
         }
 
         let v = recUpsampled[j];
@@ -1202,13 +1174,12 @@ class TapeProcessor extends AudioWorkletProcessor {
         p2 += v * v; k2 = Math.max(k2, Math.abs(v));
 
         const dryBias = v;
-        v = dsp.biasContour.process(v) * trimBias;
-        v = dryBias + (v - dryBias) * fadeBias;
+        const biasOut = v * trimBias;
+        v = dryBias + (biasOut - dryBias) * fadeBias;
         pBias += v * v; kBias = Math.max(kBias, Math.abs(v));
 
         // hysteresis → update delayed tape saturation for next sample's amp loading
         const dryHyst = v;
-        v = dsp.wavelengthContour.process(v);
         v = dsp.hysteresis.process(v) * trimHysteresis;
         if (!Number.isFinite(v)) { this._dbgNanHyst++; v = 0; }
         const satH = dsp.hysteresis.getSaturationDepth();
@@ -1418,17 +1389,12 @@ class TapeProcessor extends AudioWorkletProcessor {
         let x = outputBlock[i];
 
         if (!Number.isFinite(x)) x = 0;
-        // Safety clamp scaled to headroom so the ceiling stays at +6 dBFS in the
-        // digital domain regardless of the analog operating level.
-        const analogClamp = 2 * inScalar;
-        let clamped = false;
-        if (x > analogClamp) { x = analogClamp; clamped = true; }
-        else if (x < -analogClamp) { x = -analogClamp; clamped = true; }
-        if (clamped && ch < 2) dbgClampHits[ch]++;
+        const clampedOutput = clampAnalogOutput(x, ioMapping);
+        x = clampedOutput.value;
+        if (clampedOutput.clamped && ch < 2) dbgClampHits[ch]++;
 
-        // x is at analog levels. Apply output gain.
-        const analogOut = x * presetOutputCalibrationGain * outputGain * couplingMakeup;
-        updateStageMeter(slOutput, ch, 0, analogOut);
+        const pluginOutput = scalePluginOutput(x, pluginOutputTrim, outputGain, ioMapping);
+        updateStageMeter(slOutput, ch, 0, pluginOutput.analog);
 
         const globalTarget = this.bypassed ? 1 : 0;
         if (bypassFade !== globalTarget) {
@@ -1437,7 +1403,7 @@ class TapeProcessor extends AudioWorkletProcessor {
         }
 
         // Convert analog back to digital, applying global bypass crossfade
-        const digitalOut = analogOut * outScalar;
+        const digitalOut = pluginOutput.digital;
         let finalOut = inp[i] * bypassFade + digitalOut * (1 - bypassFade);
         if (!Number.isFinite(finalOut)) {
           if (ch < 2) dbgOutNonFinite[ch]++;
@@ -1452,13 +1418,14 @@ class TapeProcessor extends AudioWorkletProcessor {
           dbgOutCount[ch]++;
         }
 
-        // Meter the analog signal so the UI VU meter reads correctly around 0 VU
-        updateStageMeter(slOutput, ch, 1, analogOut);
+        // Meter the plugin-side analog-domain output separately from the
+        // digital return path so UI calibration stays outside the machine model.
+        updateStageMeter(slOutput, ch, 1, pluginOutput.analog);
 
-        const power = analogOut * analogOut;
+        const power = pluginOutput.analog * pluginOutput.analog;
         const vuCoeff = power > this.vuPower[ch] ? attackCoeff : releaseCoeff;
         this.vuPower[ch] = vuCoeff * this.vuPower[ch] + (1 - vuCoeff) * power;
-        this.peakHold[ch] = Math.max(Math.abs(analogOut), this.peakHold[ch] * peakRelCoeff);
+        this.peakHold[ch] = Math.max(Math.abs(pluginOutput.analog), this.peakHold[ch] * peakRelCoeff);
       }
     }
 

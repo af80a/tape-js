@@ -63,7 +63,7 @@ export const STAGE_DEFS: Record<StageId, StageDef> = {
       { value: 'transistor', label: 'Transistor' },
     ],
     params: {
-      drive: { label: 'Drive', min: 0, max: 1, default: 0.5, formatValue: fmtPct },
+      drive: { label: 'Stage Drive', min: 0, max: 1, default: 0.5, formatValue: fmtPct },
       Vpp: { label: 'Plate V', min: 200, max: 350, default: 250, formatValue: fmtV, tubeOnly: true },
       _trim: TRIM_PARAM,
     },
@@ -76,7 +76,7 @@ export const STAGE_DEFS: Record<StageId, StageDef> = {
       { value: 'IEC', label: 'IEC' },
     ],
     params: {
-      color: { label: 'Color', min: -1, max: 1, default: 0, step: 0.01, formatValue: (v) => v === 0 ? '0' : `${v > 0 ? '+' : ''}${v.toFixed(2)}` },
+      color: { label: 'Alignment Offset', min: -1, max: 1, default: 0, step: 0.01, formatValue: (v) => v === 0 ? '0' : `${v > 0 ? '+' : ''}${v.toFixed(2)}` },
       _trim: TRIM_PARAM,
     },
   },
@@ -91,7 +91,7 @@ export const STAGE_DEFS: Record<StageId, StageDef> = {
     id: 'hysteresis',
     label: 'Hysteresis',
     params: {
-      drive: { label: 'Drive', min: 0, max: 1, default: 0.5, formatValue: fmtPct },
+      drive: { label: 'Field Drive', min: 0, max: 1, default: 0.5, formatValue: fmtPct },
       saturation: { label: 'Saturation', min: 0, max: 1, default: 0.5, formatValue: fmtPct },
       k: { label: 'Pinning (k)', min: 0.1, max: 1.0, default: 0.47875, step: 0.001, formatValue: (v) => v.toFixed(3) },
       c: { label: 'Base Reversibility (c)', min: 0.01, max: 0.5, default: 0.1, step: 0.01, formatValue: (v) => v.toFixed(2) },
@@ -129,7 +129,7 @@ export const STAGE_DEFS: Record<StageId, StageDef> = {
       { value: 'transistor', label: 'Transistor' },
     ],
     params: {
-      drive: { label: 'Drive', min: 0, max: 1, default: 0.4, formatValue: fmtPct },
+      drive: { label: 'Stage Drive', min: 0, max: 1, default: 0.4, formatValue: fmtPct },
       Vpp: { label: 'Plate V', min: 200, max: 350, default: 250, formatValue: fmtV, tubeOnly: true },
       _trim: TRIM_PARAM,
     },
