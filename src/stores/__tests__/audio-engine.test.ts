@@ -1,8 +1,32 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { useAudioEngine } from '../audio-engine';
-import { useStageParams } from '../stage-params';
 import type { WorkletBridge } from '../../audio/worklet-bridge';
 import type { AudioFileLoader } from '../../audio/file-loader';
+
+const { createWorkletBridgeMock, mockLoaderInstances } = vi.hoisted(() => ({
+  createWorkletBridgeMock: vi.fn(),
+  mockLoaderInstances: [] as Array<{
+    setTimeUpdateCallback: ReturnType<typeof vi.fn>;
+  }>,
+}));
+
+vi.mock('../../audio/worklet-bridge', () => ({
+  createWorkletBridge: createWorkletBridgeMock,
+  getWorkletUrl: () => '/src/worklet/tape-processor.ts',
+  WorkletBridge: class {},
+}));
+
+vi.mock('../../audio/file-loader', () => ({
+  AudioFileLoader: vi.fn(function AudioFileLoaderMock() {
+    const loader = {
+      setTimeUpdateCallback: vi.fn(),
+    };
+    mockLoaderInstances.push(loader);
+    return loader;
+  }),
+}));
+
+import { useAudioEngine } from '../audio-engine';
+import { useStageParams } from '../stage-params';
 
 const initialAudioEngineState = useAudioEngine.getState();
 const initialStageParamsState = useStageParams.getState();
@@ -13,6 +37,29 @@ afterEach(() => {
 });
 
 describe('Audio engine preset sync', () => {
+  it('ensureAudioContext requests playback-oriented latency', async () => {
+    const onMessage = vi.fn();
+    createWorkletBridgeMock.mockResolvedValue({
+      onMessage,
+      node: {},
+      postMessage: vi.fn(),
+      setParam: vi.fn(),
+    });
+
+    const audioContextMock = vi.fn(function AudioContextMock() {
+      return { currentTime: 0 };
+    });
+    vi.stubGlobal('AudioContext', audioContextMock);
+
+    await useAudioEngine.getState().ensureAudioContext();
+
+    expect(audioContextMock).toHaveBeenCalledWith({ latencyHint: 'playback' });
+    expect(createWorkletBridgeMock).toHaveBeenCalled();
+    expect(onMessage).toHaveBeenCalled();
+    expect(mockLoaderInstances).toHaveLength(1);
+    expect(mockLoaderInstances[0]?.setTimeUpdateCallback).toHaveBeenCalled();
+  });
+
   it('loadPreset syncs preset-backed params and playback amp drive to the worklet', () => {
     const postMessage = vi.fn();
     const setParam = vi.fn();

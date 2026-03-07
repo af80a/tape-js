@@ -197,7 +197,7 @@ export const useAudioEngine = create<AudioEngineState>((set, get) => ({
   ensureAudioContext: async () => {
     if (get().audioCtx) return;
 
-    const audioCtx = new AudioContext();
+    const audioCtx = new AudioContext({ latencyHint: 'playback' });
     const bridge = await createWorkletBridge(
       audioCtx,
       get().machinePreset,
