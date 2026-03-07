@@ -1,4 +1,5 @@
 import type { AmplifierStageConfig } from './amplifier';
+import type { TransportProfile } from './transport';
 
 export interface TapeFormulation {
   /** Pinning parameter (coercivity proxy). Lower = softer tape, easier saturation. */
@@ -36,6 +37,7 @@ export interface MachinePreset {
   azimuthDefault: number;
   /** Default tape-weave excursion in arcminutes. */
   azimuthWeaveDefault: number;
+  transportProfile: TransportProfile;
   wowDefault: number;
   flutterDefault: number;
   hissDefault: number;
@@ -83,6 +85,26 @@ export const PRESETS: Record<string, MachinePreset> = {
     trackWidth: 2.08e-3,   // 82 mil playback track width
     azimuthDefault: 1.0,   // well-calibrated Swiss precision
     azimuthWeaveDefault: 0.15,
+    transportProfile: {
+      wowSupplyWeight: 0.56,
+      wowTakeupWeight: 0.24,
+      wowTensionWeight: 0.20,
+      wowSupplyRatio: 0.84,
+      wowTakeupRatio: 1.18,
+      wowTensionHz: 0.65,
+      reelDriftHz: 0.04,
+      reelDriftDepth: 0.14,
+      flutterCapstanWeight: 0.60,
+      flutterPinchWeight: 0.18,
+      flutterGuideWeight: 0.12,
+      flutterRoughnessWeight: 0.07,
+      flutterScrapeWeight: 0.03,
+      flutterPinchRatio: 1.9,
+      flutterGuideRatio: 1.28,
+      flutterRoughnessRatio: 2.2,
+      scrapeCenterHz: 720,
+      scrapeBandwidthHz: 450,
+    },
     wowDefault: 0.1,
     flutterDefault: 0.08,
     hissDefault: 0.03,
@@ -122,6 +144,26 @@ export const PRESETS: Record<string, MachinePreset> = {
     trackWidth: 5.33e-3,   // 210 mil playback track width
     azimuthDefault: 1.5,   // wider format, more sensitive to alignment
     azimuthWeaveDefault: 0.25,
+    transportProfile: {
+      wowSupplyWeight: 0.60,
+      wowTakeupWeight: 0.25,
+      wowTensionWeight: 0.15,
+      wowSupplyRatio: 0.78,
+      wowTakeupRatio: 1.26,
+      wowTensionHz: 0.55,
+      reelDriftHz: 0.035,
+      reelDriftDepth: 0.12,
+      flutterCapstanWeight: 0.66,
+      flutterPinchWeight: 0.16,
+      flutterGuideWeight: 0.10,
+      flutterRoughnessWeight: 0.06,
+      flutterScrapeWeight: 0.02,
+      flutterPinchRatio: 1.85,
+      flutterGuideRatio: 1.22,
+      flutterRoughnessRatio: 2.0,
+      scrapeCenterHz: 620,
+      scrapeBandwidthHz: 380,
+    },
     wowDefault: 0.12,
     flutterDefault: 0.06,
     hissDefault: 0.04,
@@ -163,6 +205,26 @@ export const PRESETS: Record<string, MachinePreset> = {
     trackWidth: 1.09e-3,   // 43 mil playback track width
     azimuthDefault: 2.0,   // 24-track head, harder to align precisely
     azimuthWeaveDefault: 0.45,
+    transportProfile: {
+      wowSupplyWeight: 0.45,
+      wowTakeupWeight: 0.28,
+      wowTensionWeight: 0.27,
+      wowSupplyRatio: 0.74,
+      wowTakeupRatio: 1.34,
+      wowTensionHz: 0.9,
+      reelDriftHz: 0.055,
+      reelDriftDepth: 0.22,
+      flutterCapstanWeight: 0.30,
+      flutterPinchWeight: 0.22,
+      flutterGuideWeight: 0.22,
+      flutterRoughnessWeight: 0.14,
+      flutterScrapeWeight: 0.12,
+      flutterPinchRatio: 2.15,
+      flutterGuideRatio: 1.8,
+      flutterRoughnessRatio: 3.4,
+      scrapeCenterHz: 1900,
+      scrapeBandwidthHz: 1300,
+    },
     wowDefault: 0.12,
     flutterDefault: 0.08,
     hissDefault: 0.05,

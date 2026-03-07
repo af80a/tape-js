@@ -1,128 +1,208 @@
 /**
- * Transport model — variable delay line with cubic Lagrange
- * interpolation for wow and flutter simulation.
+ * Transport model — variable delay line driven by a physically structured
+ * speed-error model.
  *
- * Wow is a slow (~1.2 Hz) pitch modulation caused by mechanical
- * irregularities in the tape transport. Flutter is a faster
- * (~6.5 Hz) modulation from capstan and guide roller vibrations.
+ * Instead of a single wow sine and flutter sine, the modulation is split into
+ * named mechanical contributors:
+ * 1. Supply/takeup reel eccentricity (slow wow components)
+ * 2. Tension/servo wander (stochastic low-rate wow)
+ * 3. Capstan rotation ripple (primary flutter component)
+ * 4. Pinch/guide roller vibration (secondary flutter lines)
+ * 5. Surface roughness / scrape flutter (band-limited stochastic flutter)
  *
- * Depth calibration is physics-based: the 0-1 control maps linearly
- * to peak speed deviation percentage. At depth=1.0, wow produces
- * 0.5% and flutter produces 0.2% peak speed deviation — consumer
- * cassette territory. Professional machines operate at 0.02-0.06%.
- *
- * Per-channel phase offsets simulate the slightly different
- * modulation each track receives from mechanical imperfections.
- * A secondary flutter harmonic adds realistic capstan content.
+ * The model generates instantaneous fractional speed error and integrates it
+ * into a variable delay. A gentle servo restoring term keeps the cumulative
+ * delay centered while preserving the expected wow/flutter amplitude.
  */
 
 const TWO_PI = 2 * Math.PI;
 
 // Maximum peak speed deviation at depth=1.0 (fraction, not percent).
-// These calibration constants ensure preset defaults produce physically
-// accurate wow/flutter matching real machine specs:
-//   Studer A810 at 15 ips: ≤0.05% combined (DIN weighted)
-//   Ampex ATR-102 at 15 ips: ≤0.04% combined (NAB)
-//   MCI JH-24 at 15 ips: ≤0.04% combined (DIN weighted)
-// The model is calibrated in fractional speed deviation, so the same constants
-// remain valid at 30 ips as well; nominal tape speed changes the EQ/head path
-// more than it changes the underlying wow/flutter percentage metric.
-// At depth=1.0: 0.5% wow / 0.2% flutter = clearly audible, lo-fi territory.
+// These remain the user-facing calibration anchors; the more detailed
+// transport profile only redistributes that deviation across components.
 const WOW_MAX_DEVIATION = 0.005;
 const FLUTTER_MAX_DEVIATION = 0.002;
 
-// Minimum configurable rates (Hz) — used for buffer sizing
+// Minimum configurable rates (Hz) — used for buffer sizing.
 const MIN_WOW_RATE_HZ = 0.5;
 const MIN_FLUTTER_RATE_HZ = 3;
 
+// Delay-restoring servo. Small enough to preserve wow amplitude, but it keeps
+// stochastic speed-error integration from walking the delay to infinity.
+const SERVO_RESTORE_HZ = 0.03;
+
 const WOW_PHASE_OFFSETS = [0, Math.PI * 0.37];
+const WOW_SECONDARY_PHASE_OFFSETS = [Math.PI * 0.41, Math.PI * 0.89];
 const FLUTTER_PHASE_OFFSETS = [Math.PI * 0.19, Math.PI * 0.83];
+const FLUTTER_GUIDE_PHASE_OFFSETS = [Math.PI * 0.53, Math.PI * 1.11];
+
+export interface TransportProfile {
+  wowSupplyWeight: number;
+  wowTakeupWeight: number;
+  wowTensionWeight: number;
+  wowSupplyRatio: number;
+  wowTakeupRatio: number;
+  wowTensionHz: number;
+  reelDriftHz: number;
+  reelDriftDepth: number;
+  flutterCapstanWeight: number;
+  flutterPinchWeight: number;
+  flutterGuideWeight: number;
+  flutterRoughnessWeight: number;
+  flutterScrapeWeight: number;
+  flutterPinchRatio: number;
+  flutterGuideRatio: number;
+  flutterRoughnessRatio: number;
+  scrapeCenterHz: number;
+  scrapeBandwidthHz: number;
+}
+
+export const DEFAULT_TRANSPORT_PROFILE: TransportProfile = {
+  wowSupplyWeight: 0.52,
+  wowTakeupWeight: 0.28,
+  wowTensionWeight: 0.20,
+  wowSupplyRatio: 0.82,
+  wowTakeupRatio: 1.23,
+  wowTensionHz: 0.7,
+  reelDriftHz: 0.045,
+  reelDriftDepth: 0.18,
+  flutterCapstanWeight: 0.56,
+  flutterPinchWeight: 0.18,
+  flutterGuideWeight: 0.14,
+  flutterRoughnessWeight: 0.08,
+  flutterScrapeWeight: 0.04,
+  flutterPinchRatio: 1.95,
+  flutterGuideRatio: 1.35,
+  flutterRoughnessRatio: 2.4,
+  scrapeCenterHz: 900,
+  scrapeBandwidthHz: 650,
+};
+
+function onePoleCoeff(hz: number, sampleRate: number): number {
+  return 1 - Math.exp(-TWO_PI * Math.max(0.001, hz) / sampleRate);
+}
+
+function wrapPhase(phase: number): number {
+  if (phase >= TWO_PI) return phase - TWO_PI;
+  if (phase < 0) return phase + TWO_PI;
+  return phase;
+}
+
+function estimateMaxDelaySamples(profile: TransportProfile, sampleRate: number): number {
+  const wowOmega = TWO_PI * MIN_WOW_RATE_HZ / sampleRate;
+  const supplyOmega = wowOmega * Math.max(0.25, profile.wowSupplyRatio * (1 - profile.reelDriftDepth));
+  const takeupOmega = wowOmega * Math.max(0.25, profile.wowTakeupRatio * (1 - profile.reelDriftDepth * 0.5));
+  const tensionOmega = TWO_PI * Math.max(0.2, profile.wowTensionHz) / sampleRate;
+
+  const flutterOmega = TWO_PI * MIN_FLUTTER_RATE_HZ / sampleRate;
+  const pinchOmega = flutterOmega * Math.max(0.5, profile.flutterPinchRatio);
+  const guideOmega = flutterOmega * Math.max(0.5, profile.flutterGuideRatio);
+  const roughOmega = flutterOmega * Math.max(0.5, profile.flutterRoughnessRatio);
+  const scrapeOmega = TWO_PI * Math.max(80, profile.scrapeCenterHz - profile.scrapeBandwidthHz * 0.5) / sampleRate;
+
+  const wowDelay =
+    WOW_MAX_DEVIATION * (
+      profile.wowSupplyWeight / supplyOmega +
+      profile.wowTakeupWeight / takeupOmega +
+      profile.wowTensionWeight / tensionOmega
+    );
+
+  const flutterDelay =
+    FLUTTER_MAX_DEVIATION * (
+      profile.flutterCapstanWeight / flutterOmega +
+      profile.flutterPinchWeight / pinchOmega +
+      profile.flutterGuideWeight / guideOmega +
+      profile.flutterRoughnessWeight / roughOmega +
+      profile.flutterScrapeWeight / scrapeOmega
+    );
+
+  return Math.max(8, Math.ceil(wowDelay + flutterDelay));
+}
 
 export class TransportModel {
   private readonly baseDelay: number;
   private readonly bufferSize: number;
   private readonly buffer: Float32Array;
+  private readonly sampleRate: number;
+  private readonly profile: TransportProfile;
 
+  private wowRateHz: number;
+  private flutterRateHz: number;
   private wowRate: number;
   private flutterRate: number;
-  private readonly channelIndex: number;
-  private readonly sampleRate: number;
-
-  private readonly initialWowPhase: number;
-  private readonly initialFlutterPhase: number;
-
-  private wowPhase: number;
-  private flutterPhase: number;
   private wowDepth = 0;
   private flutterDepth = 0;
   private writeIdx = 0;
+  private delayOffset = 0;
 
-  // Precomputed delay amplitudes (samples) from speed deviation physics:
-  // delayAmp = maxDeviation / angularRate  (where angularRate = rad/sample)
-  private wowDelayAmp: number;
-  private flutterDelayAmp: number;
+  private readonly initialSupplyPhase: number;
+  private readonly initialTakeupPhase: number;
+  private readonly initialCapstanPhase: number;
+  private readonly initialGuidePhase: number;
 
-  // Noise-based modulation state
+  private supplyPhase: number;
+  private takeupPhase: number;
+  private capstanPhase: number;
+  private pinchPhase: number;
+  private guidePhase: number;
+  private reelGeometryPhase = 0;
+
   private prngState: number;
-  private wowNoiseState = 0;
-  private flutterNoiseState = 0;
-  private scrapeNoiseState = 0;
-  private readonly wowNoiseCoeff: number;
-  private readonly flutterNoiseCoeff: number;
-  private readonly scrapeNoiseCoeff: number;
+  private tensionNoiseState = 0;
+  private roughFastState = 0;
+  private roughSlowState = 0;
+  private scrapeFastState = 0;
+  private scrapeSlowState = 0;
 
-  // Wow frequency drift: very slow modulation of wow rate simulating
-  // reel diameter change as tape moves from supply to takeup reel.
-  private baseWowRate: number;
-  private driftPhase = 0;
-  private readonly driftRate: number;  // ~0.05 Hz (period ~20s)
-  private readonly driftDepth: number; // ±25% frequency variation
+  private tensionNoiseCoeff: number;
+  private roughFastCoeff: number;
+  private roughSlowCoeff: number;
+  private scrapeFastCoeff: number;
+  private scrapeSlowCoeff: number;
+
+  private readonly reelDriftRate: number;
+  private readonly delayRestore: number;
 
   /**
    * @param sampleRate    Audio sample rate in Hz
    * @param channelIndex  Channel index for stereo phase detuning (default 0)
+   * @param profile       Machine-specific transport profile
    */
-  constructor(sampleRate: number, channelIndex = 0) {
+  constructor(sampleRate: number, channelIndex = 0, profile: TransportProfile = DEFAULT_TRANSPORT_PROFILE) {
     this.sampleRate = sampleRate;
+    this.profile = profile;
 
-    // Size buffer for worst-case delay modulation at lowest configurable rates.
-    // Combined waveform peak factor ~1.3 (sine + harmonic + noise),
-    // drift adds up to ±25%, plus 10% safety margin.
-    const maxWowAmp = WOW_MAX_DEVIATION / (TWO_PI * MIN_WOW_RATE_HZ / sampleRate);
-    const maxFlutterAmp = FLUTTER_MAX_DEVIATION / (TWO_PI * MIN_FLUTTER_RATE_HZ / sampleRate);
-    const maxModulation = Math.ceil((maxWowAmp * 1.3 * 1.25 + maxFlutterAmp * 1.3) * 1.1);
+    const maxModulation = Math.ceil(estimateMaxDelaySamples(profile, sampleRate) * 1.2);
     this.baseDelay = maxModulation;
-    this.bufferSize = 2 * maxModulation + 4; // symmetric range + interpolation headroom
+    this.bufferSize = 2 * maxModulation + 4;
     this.buffer = new Float32Array(this.bufferSize);
 
-    this.baseWowRate = TWO_PI * 1.2 / sampleRate;
-    this.wowRate = this.baseWowRate;
-    this.flutterRate = TWO_PI * 6.5 / sampleRate;
+    this.wowRateHz = 1.2;
+    this.flutterRateHz = 6.5;
+    this.wowRate = TWO_PI * this.wowRateHz / sampleRate;
+    this.flutterRate = TWO_PI * this.flutterRateHz / sampleRate;
 
-    // Precompute delay amplitudes from speed deviation calibration
-    this.wowDelayAmp = WOW_MAX_DEVIATION / this.baseWowRate;
-    this.flutterDelayAmp = FLUTTER_MAX_DEVIATION / this.flutterRate;
+    this.initialSupplyPhase = WOW_PHASE_OFFSETS[channelIndex] ?? 0;
+    this.initialTakeupPhase = WOW_SECONDARY_PHASE_OFFSETS[channelIndex] ?? 0;
+    this.initialCapstanPhase = FLUTTER_PHASE_OFFSETS[channelIndex] ?? 0;
+    this.initialGuidePhase = FLUTTER_GUIDE_PHASE_OFFSETS[channelIndex] ?? 0;
+    this.supplyPhase = this.initialSupplyPhase;
+    this.takeupPhase = this.initialTakeupPhase;
+    this.capstanPhase = this.initialCapstanPhase;
+    this.pinchPhase = this.initialCapstanPhase + Math.PI * 0.27;
+    this.guidePhase = this.initialGuidePhase;
 
-    // Wow drift: ~20 second period, ±25% rate variation
-    // Simulates reel diameter change as tape moves between reels.
-    this.driftRate = TWO_PI * 0.05 / sampleRate;
-    this.driftDepth = 0.25;
+    this.reelDriftRate = TWO_PI * profile.reelDriftHz / sampleRate;
+    this.delayRestore = Math.exp(-TWO_PI * SERVO_RESTORE_HZ / sampleRate);
 
-    this.channelIndex = channelIndex;
-    this.initialWowPhase = WOW_PHASE_OFFSETS[channelIndex] ?? 0;
-    this.initialFlutterPhase = FLUTTER_PHASE_OFFSETS[channelIndex] ?? 0;
-    this.wowPhase = this.initialWowPhase;
-    this.flutterPhase = this.initialFlutterPhase;
+    this.tensionNoiseCoeff = onePoleCoeff(profile.wowTensionHz, sampleRate);
+    this.roughFastCoeff = 0;
+    this.roughSlowCoeff = 0;
+    this.scrapeFastCoeff = onePoleCoeff(profile.scrapeCenterHz + profile.scrapeBandwidthHz * 0.5, sampleRate);
+    this.scrapeSlowCoeff = onePoleCoeff(Math.max(1, profile.scrapeCenterHz - profile.scrapeBandwidthHz * 0.5), sampleRate);
+    this.updateFlutterNoiseCoefficients();
 
-    // Filtered noise for non-periodic modulation character.
-    // Wow noise: lowpass at ~2 Hz captures slow mechanical drift.
-    // Flutter noise: lowpass at ~12 Hz captures capstan jitter bandwidth.
-    // Scrape noise: bandpass/lowpass around 3-4 kHz for stick-slip head friction.
-    this.wowNoiseCoeff = 1 - Math.exp(-TWO_PI * 2 / sampleRate);
-    this.flutterNoiseCoeff = 1 - Math.exp(-TWO_PI * 12 / sampleRate);
-    this.scrapeNoiseCoeff = 1 - Math.exp(-TWO_PI * 3500 / sampleRate);
-
-    // Seed xorshift32 PRNG per-channel for stereo decorrelation
+    // Seed xorshift32 PRNG per channel for stereo decorrelation.
     this.prngState = 1 + channelIndex * 65537;
   }
 
@@ -136,19 +216,17 @@ export class TransportModel {
     this.flutterDepth = Math.max(0, Math.min(1, v));
   }
 
-  /** Set wow LFO rate in Hz (e.g., 0.5-3.0 Hz). */
+  /** Set wow base rate in Hz. */
   setWowRate(hz: number): void {
-    hz = Math.max(MIN_WOW_RATE_HZ, hz); // enforce buffer-sizing lower bound
-    this.baseWowRate = TWO_PI * hz / this.sampleRate;
-    this.wowRate = this.baseWowRate;
-    this.wowDelayAmp = WOW_MAX_DEVIATION / this.baseWowRate;
+    this.wowRateHz = Math.max(MIN_WOW_RATE_HZ, hz);
+    this.wowRate = TWO_PI * this.wowRateHz / this.sampleRate;
   }
 
-  /** Set flutter LFO rate in Hz (e.g., 3-15 Hz). */
+  /** Set flutter base rate in Hz. */
   setFlutterRate(hz: number): void {
-    hz = Math.max(MIN_FLUTTER_RATE_HZ, hz); // enforce buffer-sizing lower bound
-    this.flutterRate = TWO_PI * hz / this.sampleRate;
-    this.flutterDelayAmp = FLUTTER_MAX_DEVIATION / this.flutterRate;
+    this.flutterRateHz = Math.max(MIN_FLUTTER_RATE_HZ, hz);
+    this.flutterRate = TWO_PI * this.flutterRateHz / this.sampleRate;
+    this.updateFlutterNoiseCoefficients();
   }
 
   /** Xorshift32 PRNG returning a value in [-1, 1]. */
@@ -161,51 +239,61 @@ export class TransportModel {
     return (x | 0) / 0x7FFFFFFF;
   }
 
+  private updateFlutterNoiseCoefficients(): void {
+    const roughCenterHz = Math.max(4, this.flutterRateHz * this.profile.flutterRoughnessRatio);
+    this.roughFastCoeff = onePoleCoeff(roughCenterHz * 1.9, this.sampleRate);
+    this.roughSlowCoeff = onePoleCoeff(Math.max(1, roughCenterHz * 0.55), this.sampleRate);
+  }
+
   /** Process a single sample through the variable delay line. */
   process(input: number): number {
-    // 1. Write input to circular buffer
     this.buffer[this.writeIdx] = input;
 
-    // 2. Generate filtered noise for non-periodic modulation
-    this.wowNoiseState += this.wowNoiseCoeff * (this.nextNoise() - this.wowNoiseState);
-    this.flutterNoiseState += this.flutterNoiseCoeff * (this.nextNoise() - this.flutterNoiseState);
-    this.scrapeNoiseState += this.scrapeNoiseCoeff * (this.nextNoise() - this.scrapeNoiseState);
+    const reelGeometry = Math.sin(this.reelGeometryPhase);
+    const supplyRate =
+      this.wowRate *
+      Math.max(0.25, this.profile.wowSupplyRatio * (1 - this.profile.reelDriftDepth * reelGeometry));
+    const takeupRate =
+      this.wowRate *
+      Math.max(0.25, this.profile.wowTakeupRatio * (1 + this.profile.reelDriftDepth * reelGeometry));
+    const pinchRate = this.flutterRate * this.profile.flutterPinchRatio;
+    const guideRate = this.flutterRate * this.profile.flutterGuideRatio;
 
-    // 3. Calculate modulated delay from physics-based speed deviation
-    // Delay amplitude (samples) = peak_speed_deviation / angular_rate
-    // Sine provides the dominant spectral peak; noise adds cycle-to-cycle variation
-    const wowSine = Math.sin(this.wowPhase) * 0.7;
-    const wowNoise = this.wowNoiseState * 0.3;
-    const wowMod = (wowSine + wowNoise) * this.wowDepth * this.wowDelayAmp;
+    this.tensionNoiseState += this.tensionNoiseCoeff * (this.nextNoise() - this.tensionNoiseState);
+    const roughInput = this.nextNoise();
+    this.roughFastState += this.roughFastCoeff * (roughInput - this.roughFastState);
+    this.roughSlowState += this.roughSlowCoeff * (roughInput - this.roughSlowState);
+    const roughness = this.roughFastState - this.roughSlowState;
 
-    const flutterSine = Math.sin(this.flutterPhase) * 0.7;
-    const flutterHarmonic =
-      Math.sin(this.flutterPhase * 2 + this.channelIndex * 0.47) * 0.35 * 0.7;
-    const flutterNoise = this.flutterNoiseState * 0.3;
-    const flutterMod =
-      (flutterSine + flutterHarmonic + flutterNoise) *
-      this.flutterDepth *
-      this.flutterDelayAmp;
+    const scrapeInput = this.nextNoise();
+    this.scrapeFastState += this.scrapeFastCoeff * (scrapeInput - this.scrapeFastState);
+    this.scrapeSlowState += this.scrapeSlowCoeff * (scrapeInput - this.scrapeSlowState);
+    const scrape = this.scrapeFastState - this.scrapeSlowState;
 
-    // Scrape flutter: physically very fast (3-4kHz), causes FM sidebands (gritty/smeary).
-    // Delay amplitude = max_deviation / angular_rate. For 3kHz and 0.05% dev, amp is ~0.0015 samples.
-    const scrapeMod = this.scrapeNoiseState * this.flutterDepth * 0.0015;
+    const wowDeviation = WOW_MAX_DEVIATION * this.wowDepth * (
+      this.profile.wowSupplyWeight * Math.sin(this.supplyPhase) +
+      this.profile.wowTakeupWeight * Math.sin(this.takeupPhase) +
+      this.profile.wowTensionWeight * this.tensionNoiseState
+    );
+    const flutterDeviation = FLUTTER_MAX_DEVIATION * this.flutterDepth * (
+      this.profile.flutterCapstanWeight * Math.sin(this.capstanPhase) +
+      this.profile.flutterPinchWeight * Math.sin(this.pinchPhase) +
+      this.profile.flutterGuideWeight * Math.sin(this.guidePhase) +
+      this.profile.flutterRoughnessWeight * roughness * 1.6 +
+      this.profile.flutterScrapeWeight * scrape * 2.2
+    );
 
-    const delay = this.baseDelay + wowMod + flutterMod + scrapeMod;
+    this.delayOffset = this.delayOffset * this.delayRestore + wowDeviation + flutterDeviation;
+    const safeDelay = Math.max(1, Math.min(this.bufferSize - 3, this.baseDelay + this.delayOffset));
 
-    // 4. Advance LFO phases with wow frequency drift
-    // Drift modulates the wow rate by ±15% over a ~50 second period,
-    // simulating reel diameter change as tape moves between reels.
-    const driftMod = 1 + this.driftDepth * Math.sin(this.driftPhase);
-    this.wowPhase += this.baseWowRate * driftMod;
-    if (this.wowPhase >= TWO_PI) this.wowPhase -= TWO_PI;
-    this.flutterPhase += this.flutterRate;
-    if (this.flutterPhase >= TWO_PI) this.flutterPhase -= TWO_PI;
-    this.driftPhase += this.driftRate;
-    if (this.driftPhase >= TWO_PI) this.driftPhase -= TWO_PI;
+    this.supplyPhase = wrapPhase(this.supplyPhase + supplyRate);
+    this.takeupPhase = wrapPhase(this.takeupPhase + takeupRate);
+    this.capstanPhase = wrapPhase(this.capstanPhase + this.flutterRate);
+    this.pinchPhase = wrapPhase(this.pinchPhase + pinchRate);
+    this.guidePhase = wrapPhase(this.guidePhase + guideRate);
+    this.reelGeometryPhase = wrapPhase(this.reelGeometryPhase + this.reelDriftRate);
 
-    // 4. Read from buffer with cubic Lagrange interpolation
-    const readPos = this.writeIdx - delay;
+    const readPos = this.writeIdx - safeDelay;
     const readFloor = Math.floor(readPos);
     const frac = readPos - readFloor;
 
@@ -214,7 +302,6 @@ export class TransportModel {
     const s2 = this.readBuffer(readFloor + 1);
     const s3 = this.readBuffer(readFloor + 2);
 
-    // Cubic Lagrange interpolation
     const output =
       s1 +
       0.5 *
@@ -224,28 +311,32 @@ export class TransportModel {
             (2 * s0 - 5 * s1 + 4 * s2 - s3 +
               frac * (3 * (s1 - s2) + s3 - s0)));
 
-    // 5. Advance write index (wrap at bufferSize)
     this.writeIdx = (this.writeIdx + 1) % this.bufferSize;
 
     return output;
   }
 
-  /** Read from the circular buffer with safe index wrapping. */
   private readBuffer(idx: number): number {
     return this.buffer[
       ((idx % this.bufferSize) + this.bufferSize) % this.bufferSize
     ];
   }
 
-  /** Reset buffer, write index, LFO phases, and noise filter states. */
+  /** Reset buffer, write index, phases, and stochastic states. */
   reset(): void {
     this.buffer.fill(0);
     this.writeIdx = 0;
-    this.wowPhase = this.initialWowPhase;
-    this.flutterPhase = this.initialFlutterPhase;
-    this.wowNoiseState = 0;
-    this.flutterNoiseState = 0;
-    this.scrapeNoiseState = 0;
-    this.driftPhase = 0;
+    this.delayOffset = 0;
+    this.supplyPhase = this.initialSupplyPhase;
+    this.takeupPhase = this.initialTakeupPhase;
+    this.capstanPhase = this.initialCapstanPhase;
+    this.pinchPhase = this.initialCapstanPhase + Math.PI * 0.27;
+    this.guidePhase = this.initialGuidePhase;
+    this.reelGeometryPhase = 0;
+    this.tensionNoiseState = 0;
+    this.roughFastState = 0;
+    this.roughSlowState = 0;
+    this.scrapeFastState = 0;
+    this.scrapeSlowState = 0;
   }
 }

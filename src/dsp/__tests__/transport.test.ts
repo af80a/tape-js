@@ -5,6 +5,42 @@ import { PRESETS } from '../presets';
 describe('TransportModel', () => {
   const fs = 44100;
 
+  function measureToneResidualRms(
+    model: TransportModel,
+    carrierHz: number,
+    durationSec = 2,
+    skipSec = 0.5,
+  ): number {
+    const totalSamples = Math.floor(fs * durationSec);
+    const start = Math.floor(fs * skipSec);
+    const output = new Float32Array(totalSamples);
+    for (let i = 0; i < totalSamples; i++) {
+      output[i] = model.process(Math.sin((2 * Math.PI * carrierHz * i) / fs));
+    }
+
+    let sinProj = 0;
+    let cosProj = 0;
+    for (let i = start; i < totalSamples; i++) {
+      const phase = (2 * Math.PI * carrierHz * i) / fs;
+      sinProj += output[i] * Math.sin(phase);
+      cosProj += output[i] * Math.cos(phase);
+    }
+
+    const count = Math.max(1, totalSamples - start);
+    const sinGain = (2 * sinProj) / count;
+    const cosGain = (2 * cosProj) / count;
+
+    let sumSq = 0;
+    for (let i = start; i < totalSamples; i++) {
+      const phase = (2 * Math.PI * carrierHz * i) / fs;
+      const fitted = sinGain * Math.sin(phase) + cosGain * Math.cos(phase);
+      const residual = output[i] - fitted;
+      sumSq += residual * residual;
+    }
+
+    return Math.sqrt(sumSq / count);
+  }
+
   it('no NaN with wow=0.5, flutter=0.5 for 1s of 440Hz', () => {
     const transport = new TransportModel(fs);
     transport.setWow(0.5);
@@ -283,7 +319,7 @@ describe('TransportModel', () => {
     });
 
     it('Studer defaults stay within the published pro-machine wow/flutter envelope', () => {
-      const model = new TransportModel(fs);
+      const model = new TransportModel(fs, 0, PRESETS.studer.transportProfile);
       model.setWow(PRESETS.studer.wowDefault);
       model.setFlutter(PRESETS.studer.flutterDefault);
 
@@ -295,7 +331,7 @@ describe('TransportModel', () => {
     });
 
     it('Ampex defaults stay within the published ATR-102 wow/flutter envelope', () => {
-      const model = new TransportModel(fs);
+      const model = new TransportModel(fs, 0, PRESETS.ampex.transportProfile);
       model.setWow(PRESETS.ampex.wowDefault);
       model.setFlutter(PRESETS.ampex.flutterDefault);
 
@@ -306,7 +342,7 @@ describe('TransportModel', () => {
     });
 
     it('MCI defaults stay within the published JH-24 wow/flutter envelope', () => {
-      const model = new TransportModel(fs);
+      const model = new TransportModel(fs, 0, PRESETS.mci.transportProfile);
       model.setWow(PRESETS.mci.wowDefault);
       model.setFlutter(PRESETS.mci.flutterDefault);
 
@@ -327,6 +363,22 @@ describe('TransportModel', () => {
         expect(Number.isFinite(y)).toBe(true);
         expect(Math.abs(y)).toBeLessThan(3);
       }
+    });
+
+    it('machine transport profiles produce measurably different flutter residuals at the same control setting', () => {
+      const ampex = new TransportModel(fs, 0, PRESETS.ampex.transportProfile);
+      const mci = new TransportModel(fs, 0, PRESETS.mci.transportProfile);
+      ampex.setWow(0);
+      ampex.setFlutter(0.5);
+      mci.setWow(0);
+      mci.setFlutter(0.5);
+
+      const ampexResidual = measureToneResidualRms(ampex, 10_000);
+      const mciResidual = measureToneResidualRms(mci, 10_000);
+
+      expect(Math.max(mciResidual, ampexResidual)).toBeGreaterThan(
+        Math.min(mciResidual, ampexResidual) * 1.15,
+      );
     });
   });
 });

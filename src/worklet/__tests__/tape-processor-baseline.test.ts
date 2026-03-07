@@ -133,6 +133,11 @@ interface BaselineReport {
       loss8000Db: number;
       loss16000Db: number;
     };
+    headWeaveModulationAmpex: {
+      depth1000HzDb: number;
+      depth16000HzDb: number;
+      deltaDb: number;
+    };
     thdLevelSweepAmpex: {
       recordDominant: NonlinearThdSweep;
       playbackDominant: NonlinearThdSweep;
@@ -367,6 +372,30 @@ function renderStereoCalibrationTone(
   };
 }
 
+function renderExtendedCalibrationTone(
+  processor: TestProcessor,
+  frequency: number,
+  inputPeak: number,
+  durationSeconds: number,
+  params: Partial<WorkletParamValues> = {},
+): { output: Float32Array; windowStart: number; windowEnd: number } {
+  const warmup = ALIGNMENT_WINDOW.warmup;
+  const analysis = Math.round(durationSeconds * FS);
+  const totalLength = warmup + analysis;
+  const input = new Float32Array(totalLength);
+  input.set(generateSine(warmup, FS, frequency, inputPeak));
+  input.set(
+    generateSine(analysis, FS, frequency, inputPeak, 0, warmup),
+    warmup,
+  );
+
+  return {
+    output: renderMono(processor, input, { params }),
+    windowStart: warmup,
+    windowEnd: totalLength,
+  };
+}
+
 function analyzeCalibrationTone(
   input: Float32Array,
   output: Float32Array,
@@ -441,6 +470,29 @@ async function measureImdDb(
     render.windowEnd,
   );
   return db(profile.imd);
+}
+
+async function measureWeaveModulationDepthDb(frequency: number, weaveArcmin: number): Promise<number> {
+  const processor = await createHeadOnlyProcessor('ampex', 15);
+  send(processor, { type: 'set-stage-param', stageId: 'head', param: 'azimuth', value: 0 });
+  send(processor, { type: 'set-stage-param', stageId: 'head', param: 'weave', value: weaveArcmin });
+  const render = renderExtendedCalibrationTone(processor, frequency, 0.35, 4.0, {
+    wow: 0,
+    flutter: 0,
+    hiss: 0,
+    outputGain: 1,
+  });
+
+  const windowSize = 4_096;
+  let minMag = Infinity;
+  let maxMag = 0;
+  for (let start = render.windowStart; start + windowSize <= render.windowEnd; start += windowSize) {
+    const mag = goertzelAnalysis(render.output, FS, frequency, start, start + windowSize).magnitude;
+    minMag = Math.min(minMag, mag);
+    maxMag = Math.max(maxMag, mag);
+  }
+
+  return db(maxMag / Math.max(minMag, 1e-12));
 }
 
 function createEmptyThdLevelSweep(): ThdLevelSweep {
@@ -518,6 +570,7 @@ function toleranceForMetric(path: string): number {
     || path.endsWith('bleed3000HzDb')
     || path.endsWith('bleed10000HzDb')
   ) return 0.5;
+  if (path.endsWith('depth1000HzDb') || path.endsWith('depth16000HzDb')) return 0.25;
   if (path.endsWith('phase500Rad') || path.endsWith('phase2000Rad') || path.endsWith('phase8000Rad')) return 0.12;
   if (path.toLowerCase().endsWith('thddb')) return 0.6;
   if (path.endsWith('rmsDb')) return 0.25;
@@ -744,6 +797,14 @@ async function buildBaselineReport(): Promise<BaselineReport> {
     headAzimuthLossAmpex[key] = roundMetric(db(tiltedMag / Math.max(cleanMag, 1e-12)));
   }
 
+  const weaveMidDepthDb = await measureWeaveModulationDepthDb(1_000, 5);
+  const weaveHighDepthDb = await measureWeaveModulationDepthDb(16_000, 5);
+  const headWeaveModulationAmpex = {
+    depth1000HzDb: roundMetric(weaveMidDepthDb),
+    depth16000HzDb: roundMetric(weaveHighDepthDb),
+    deltaDb: roundMetric(weaveHighDepthDb - weaveMidDepthDb),
+  };
+
   const thdLevelSweepAmpex = {
     recordDominant: createEmptyNonlinearThdSweep(),
     playbackDominant: createEmptyNonlinearThdSweep(),
@@ -787,6 +848,7 @@ async function buildBaselineReport(): Promise<BaselineReport> {
       headCrosstalkCurveAmpex,
       headAzimuthPhaseAmpex,
       headAzimuthLossAmpex,
+      headWeaveModulationAmpex,
       thdLevelSweepAmpex,
       imdLevelSweepAmpex,
     },

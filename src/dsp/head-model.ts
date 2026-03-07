@@ -9,9 +9,10 @@
  *    of the playback head gap.
  * 4. Spacing loss — exp(-2π * d * f / v) exponential HF loss from
  *    the head-to-tape air gap (Wallace equation).
- * 5. Stochastic dropouts — momentary spacing increases from coating
- *    defects/particles, modeled via the Wallace equation with a single
- *    spacing parameter d(t) driving both gain and HF rolloff.
+ * 5. Dynamic spacing/contact modulation — momentary increases in
+ *    head-to-tape spacing from coating defects, tape wander, and weave,
+ *    modeled via the Wallace equation with a single spacing parameter
+ *    d(t) driving both gain and HF rolloff.
  *
  * The gap + spacing losses are combined into a short FIR filter whose
  * coefficients are computed from the sampled frequency response via
@@ -206,8 +207,8 @@ export class HeadModel {
     }
   }
 
-  /** Process a single sample: dropouts -> bump -> dip -> FIR loss filter. */
-  process(input: number): number {
+  /** Process a single sample: dynamic spacing -> bump -> dip -> FIR loss filter. */
+  process(input: number, extraSpacing = 0): number {
     const tapeSpeedMps = this.tapeSpeedIps * 0.0254;
 
     // --- Stochastic Dropouts ---
@@ -229,14 +230,14 @@ export class HeadModel {
     }
 
     // Compute instantaneous dropout spacing from Hanning envelope
-    let targetSpacing = 0;
+    let targetSpacing = Math.max(0, extraSpacing);
     if (this.dropoutActive) {
       this.dropoutTime++;
       if (this.dropoutTime >= this.dropoutDuration) {
         this.dropoutActive = false;
       } else {
         const env = 0.5 - 0.5 * Math.cos(2 * Math.PI * this.dropoutTime / this.dropoutDuration);
-        targetSpacing = this.dropoutPeakSpacing * env;
+        targetSpacing += this.dropoutPeakSpacing * env;
       }
     }
 

@@ -53,9 +53,16 @@ const TWO_PI = 2 * Math.PI;
 const MAX_AZIMUTH_ARCMIN = 30;
 const MAX_WEAVE_ARCMIN = 5;
 const MAX_TRACK_INTEGRATION_TAPS = 33;
+const WEAVE_CONTACT_COUPLING = 0.05;
 
 // 1 arcminute in radians
 const ARCMIN_TO_RAD = Math.PI / (180 * 60);
+
+export interface AzimuthInstantaneousState {
+  theta: number;
+  tanTheta: number;
+  contactSpacing: number;
+}
 
 export class AzimuthModel {
   private readonly sampleRate: number;
@@ -153,19 +160,29 @@ export class AzimuthModel {
     this.trackWidth = Math.max(0, meters);
   }
 
-  /** Process a single sample through the azimuth delay line. */
-  process(input: number): number {
-    // Write input to circular buffer
-    this.buffer[this.writeIdx] = input;
-
-    // Compute instantaneous azimuth magnitude: static + weave modulation.
-    // Two-component weave: slow reel effects (70%) + faster roller effects (30%).
+  captureState(): AzimuthInstantaneousState {
     const drift = this.weaveDepth * (
       0.7 * Math.sin(this.driftPhase1) +
       0.3 * Math.sin(this.driftPhase2)
     );
     const theta = Math.max(0, this.staticAzimuth + drift);
-    const tanTheta = Math.tan(theta);
+
+    return {
+      theta,
+      tanTheta: Math.tan(theta),
+      // Tape weave can slightly vary contact/spacing as the tape wanders over the head.
+      // Keep this much smaller than true dropouts so mastering-safe weave remains subtle.
+      contactSpacing: this.trackWidth * Math.abs(drift) * WEAVE_CONTACT_COUPLING,
+    };
+  }
+
+  /** Process a single sample through the azimuth delay line. */
+  process(input: number, state?: AzimuthInstantaneousState): number {
+    // Write input to circular buffer
+    this.buffer[this.writeIdx] = input;
+
+    const azimuthState = state ?? this.captureState();
+    const tanTheta = azimuthState.tanTheta;
 
     // Inter-channel delay: Δt = channelIndex * trackSpacing * tan(θ) / v
     // Channel 0 gets baseDelay only (reference latency).

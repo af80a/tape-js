@@ -663,7 +663,7 @@ class TapeProcessor extends AudioWorkletProcessor {
     const playbackEQ = this.buildEq(preset.eqStandard, 'playback');
     const outputXfmr = new TransformerModel(fs * osFactor, preset.outputTransformer);
 
-    const transport = new TransportModel(fs, channel);
+    const transport = new TransportModel(fs, channel, preset.transportProfile);
     transport.setWow(preset.wowDefault);
     transport.setFlutter(preset.flutterDefault);
 
@@ -1295,7 +1295,8 @@ class TapeProcessor extends AudioWorkletProcessor {
 
         updateStageMeter(slHead, ch, 0, x);
         const dryHead = x;
-        x = dsp.azimuth.process(dsp.head.process(x)) * trimHead;
+        const azimuthState = dsp.azimuth.captureState();
+        x = dsp.azimuth.process(dsp.head.process(x, azimuthState.contactSpacing), azimuthState) * trimHead;
         x = dryHead + (x - dryHead) * fadeHead;
         updateStageMeter(slHead, ch, 1, x);
 

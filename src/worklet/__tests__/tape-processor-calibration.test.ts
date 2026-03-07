@@ -242,6 +242,30 @@ function renderStereoCalibrationTone(
   };
 }
 
+function renderExtendedCalibrationTone(
+  processor: TestProcessor,
+  frequency: number,
+  inputPeak: number,
+  durationSeconds: number,
+  params: Partial<WorkletParamValues> = {},
+): { output: Float32Array; windowStart: number; windowEnd: number } {
+  const warmup = ALIGNMENT_WINDOW.warmup;
+  const analysis = Math.round(durationSeconds * FS);
+  const totalLength = warmup + analysis;
+  const input = new Float32Array(totalLength);
+  input.set(generateSine(warmup, FS, frequency, inputPeak));
+  input.set(
+    generateSine(analysis, FS, frequency, inputPeak, 0, warmup),
+    warmup,
+  );
+
+  return {
+    output: renderMono(processor, input, { params }),
+    windowStart: warmup,
+    windowEnd: totalLength,
+  };
+}
+
 function analyzeCalibrationTone(
   input: Float32Array,
   output: Float32Array,
@@ -316,6 +340,29 @@ async function measureImdDb(
     render.windowEnd,
   );
   return db(profile.imd);
+}
+
+async function measureWeaveModulationDepthDb(frequency: number, weaveArcmin: number): Promise<number> {
+  const processor = await createHeadOnlyProcessor('ampex', 15);
+  send(processor, { type: 'set-stage-param', stageId: 'head', param: 'azimuth', value: 0 });
+  send(processor, { type: 'set-stage-param', stageId: 'head', param: 'weave', value: weaveArcmin });
+  const render = renderExtendedCalibrationTone(processor, frequency, 0.35, 4.0, {
+    wow: 0,
+    flutter: 0,
+    hiss: 0,
+    outputGain: 1,
+  });
+
+  const windowSize = 4_096;
+  let minMag = Infinity;
+  let maxMag = 0;
+  for (let start = render.windowStart; start + windowSize <= render.windowEnd; start += windowSize) {
+    const mag = goertzelAnalysis(render.output, FS, frequency, start, start + windowSize).magnitude;
+    minMag = Math.min(minMag, mag);
+    maxMag = Math.max(maxMag, mag);
+  }
+
+  return db(maxMag / Math.max(minMag, 1e-12));
 }
 
 afterEach(() => {
@@ -544,4 +591,13 @@ describe('TapeProcessor house calibration', () => {
       }
     }
   }, 20_000);
+
+  it('head-only weave modulates high frequencies more than midband through the full processor', async () => {
+    const midDepthDb = await measureWeaveModulationDepthDb(1_000, 5);
+    const highDepthDb = await measureWeaveModulationDepthDb(16_000, 5);
+
+    expect(highDepthDb).toBeGreaterThan(0.1);
+    expect(highDepthDb).toBeGreaterThan(midDepthDb + 0.1);
+    expect(midDepthDb).toBeLessThan(0.4);
+  }, 15_000);
 });
