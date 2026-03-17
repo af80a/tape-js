@@ -267,11 +267,10 @@ export class Oversampler {
     this.upsamplePhases = filters.upsamplePhases;
     this.downsampleKernel = filters.downsampleKernel;
 
-    // States are now circular buffers
-    this.upsampleState = new Float64Array(this.tapsPerPhase);
     // Double-buffer: size 2N lets convolution read state[idx + j] without inner-loop modulo.
     // Mirror each written sample at state[idx] and state[idx + N] so the window
     // [idx, idx+N) is always valid regardless of wrap position.
+    this.upsampleState = new Float64Array(this.tapsPerPhase * 2);
     this.downsampleState = new Float64Array(this.downsampleKernel.length * 2);
     
     this.upsampleStateIdx = 0;
@@ -292,22 +291,25 @@ export class Oversampler {
 
     const factor = this.factor;
     const output = this.upsampleOutput;
-    const state = this.upsampleState;
+    const state = this.upsampleState; // size 2*taps (double-buffer)
     const phases = this.upsamplePhases;
     const taps = this.tapsPerPhase;
     let stateIdx = this.upsampleStateIdx;
 
     for (let i = 0; i < input.length; i++) {
-      // Insert new sample into circular buffer (moving backward)
-      stateIdx = (stateIdx - 1 + taps) % taps;
-      state[stateIdx] = input[i];
+      // Insert new sample into double-buffer circular buffer (moving backward)
+      if (--stateIdx < 0) stateIdx += taps;
+      const v = input[i];
+      state[stateIdx] = v;
+      state[stateIdx + taps] = v;
 
-      // Compute each phase output
+      // Compute each phase output — no inner-loop modulo (double-buffer guarantees
+      // [stateIdx, stateIdx+taps) is always a valid contiguous window)
       for (let p = 0; p < factor; p++) {
         let sum = 0;
         const phase = phases[p];
         for (let t = 0; t < taps; t++) {
-          sum += state[(stateIdx + t) % taps] * phase[t];
+          sum += state[stateIdx + t] * phase[t];
         }
         output[i * factor + p] = sum;
       }

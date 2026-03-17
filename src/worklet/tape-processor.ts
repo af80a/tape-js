@@ -19,10 +19,8 @@ import type { MachinePreset } from '../dsp/presets';
 import { CrosstalkModel } from '../dsp/crosstalk';
 import { AzimuthModel } from '../dsp/azimuth';
 import {
-  clampAnalogOutput,
   createOperatingLevelMapping,
   scalePluginInput,
-  scalePluginOutput,
 } from './plugin-io';
 
 // ---------------------------------------------------------------------------
@@ -925,6 +923,8 @@ class TapeProcessor extends AudioWorkletProcessor {
     // digital signal is presented to the analog model and how the analog-model
     // output is returned to the plugin domain; it is not part of the machine physics.
     const ioMapping = createOperatingLevelMapping(headroom);
+    const analogClamp = ioMapping.analogClamp;
+    const analogToDigital = ioMapping.analogToDigital;
 
     // Cache ballistics coefficients as locals for inner loop
     const attackCoeff = this.vuAttackCoeff;
@@ -936,6 +936,11 @@ class TapeProcessor extends AudioWorkletProcessor {
     // Lowpass filter coefficient for 1-sample delayed coupling (prevents Nyquist oscillation).
     // A 20us time constant (~8kHz cutoff) preserves all punch while ensuring stability.
     const couplingAlpha = Math.exp(-1 / (sampleRate * factor * 0.00002));
+    const couplingBeta = 1 - couplingAlpha;
+
+    // Oversampled block length and reciprocal (invariant across channels/phases)
+    const osBlockLen = blockSize * factor;
+    const ooF = 1 / factor;
 
     // Cache stage bypass flags for hot loop
     const bypassInputXfmr = this.stageBypassed.get('inputXfmr') ?? false;
@@ -1047,11 +1052,17 @@ class TapeProcessor extends AudioWorkletProcessor {
     const ovNoiseHiss = ov.get('noise.hiss');
     const targetBias = bypassBias ? 0 : (ov.get('bias.level') ?? biasParam);
     const biasSmoothCoeff = Math.exp(-1 / (sampleRate * 0.003)); // 3ms time constant
+    const biasSmoothBeta = 1 - biasSmoothCoeff;
 
     const advanceFade = (current: number, bypassed: boolean): number => {
       const target = bypassed ? 0 : 1;
       if (current === target) return current;
       return Math.max(0, Math.min(1, current + (target > current ? fadeStep : -fadeStep)));
+    };
+
+    const smoothSat = (arr: number[], ch: number, maxSat: number, fade: number): void => {
+      const v = maxSat * fade;
+      arr[ch] += (v - arr[ch]) * (v > arr[ch] ? attackDelta : releaseDelta);
     };
 
     const delayedIg = this.delayedIg;
@@ -1110,8 +1121,8 @@ class TapeProcessor extends AudioWorkletProcessor {
 
       // ---- PHASE 1: RECORD CHAIN (block oversampled) ----
       const recUpsampled = dsp.recordOversampler.upsample(inputBlock);
-      const recOsLen = blockSize * factor;
-      const ooF = 1 / factor;
+      const sagBlock = this.sagBlocks[ch];
+      const pbIpBlock = this.pbIpBlocks[ch];
 
       let p0 = 0, k0 = 0, p1 = 0, k1 = 0, p2 = 0, k2 = 0, pBias = 0, kBias = 0, p3 = 0, k3 = 0;
       let maxSatInputXfmr = 0, maxSatRecordAmp = 0, maxSatHysteresis = 0;
@@ -1123,10 +1134,11 @@ class TapeProcessor extends AudioWorkletProcessor {
       const effectiveTapeSat = Math.min(1, delayedTapeSat[ch] * couplingAmount);
       const targetRload = 1e6 * (1.0 - effectiveTapeSat * 0.99) + 10000;
 
-      for (let j = 0; j < recOsLen; j++) {
+      let recBaseCount = 0;
+      for (let j = 0; j < osBlockLen; j++) {
         // Bias smoothing at base-rate boundaries
-        if (j % factor === 0) {
-          smoothedBias[ch] += (targetBias - smoothedBias[ch]) * (1 - biasSmoothCoeff);
+        if (recBaseCount === 0) {
+          smoothedBias[ch] += (targetBias - smoothedBias[ch]) * biasSmoothBeta;
           dsp.hysteresis.setBias(smoothedBias[ch]);
         }
 
@@ -1140,7 +1152,7 @@ class TapeProcessor extends AudioWorkletProcessor {
         const unloadedXfmr = dsp.inputXfmr.process(v) * trimInputXfmr;
         let xfmrOut = unloadedXfmr;
         if (usePredictorCoupling) {
-          const predictedIg = dsp.recordAmp.previewGridCurrent(unloadedXfmr, this.pbIpBlocks[ch][j], targetRload);
+          const predictedIg = dsp.recordAmp.previewGridCurrent(unloadedXfmr, pbIpBlock[j], targetRload);
           if (Number.isFinite(predictedIg)) {
             xfmrOut -= Math.max(0, predictedIg) * TapeProcessor.XFMR_Z_OUT * couplingAmount;
           }
@@ -1154,17 +1166,16 @@ class TapeProcessor extends AudioWorkletProcessor {
         // recordAmp → tape saturation loads the amp output (1-sample delayed)
         const dryRamp = v;
         // Physical impedance loading: when tape core saturates, impedance drops from 1M to ~10k
-        const targetPbIp = this.pbIpBlocks[ch][j];
-        v = dsp.recordAmp.process(v, targetPbIp, targetRload) * trimRecordAmp;
+        v = dsp.recordAmp.process(v, pbIpBlock[j], targetRload) * trimRecordAmp;
         if (!Number.isFinite(v)) { this._dbgNanAmp++; v = 0; }
         maxSatRecordAmp = Math.max(maxSatRecordAmp, dsp.recordAmp.getSaturationDepth());
-        
-        this.sagBlocks[ch][j] = dsp.recordAmp.getScreenVoltage();
-        
+
+        sagBlock[j] = dsp.recordAmp.getScreenVoltage();
+
         // Update grid current coupling with low-pass smoothing to prevent Nyquist oscillation
         const targetIg = dsp.recordAmp.getGridCurrent();
-        delayedIg[ch] = delayedIg[ch] * couplingAlpha + targetIg * (1 - couplingAlpha);
-        
+        delayedIg[ch] = delayedIg[ch] * couplingAlpha + targetIg * couplingBeta;
+
         v = dryRamp + (v - dryRamp) * fadeRecordAmp;
         p1 += v * v; k1 = Math.max(k1, Math.abs(v));
 
@@ -1184,17 +1195,18 @@ class TapeProcessor extends AudioWorkletProcessor {
         if (!Number.isFinite(v)) { this._dbgNanHyst++; v = 0; }
         const satH = dsp.hysteresis.getSaturationDepth();
         maxSatHysteresis = Math.max(maxSatHysteresis, satH);
-        
+
         // Update tape saturation coupling with low-pass smoothing
-        delayedTapeSat[ch] = delayedTapeSat[ch] * couplingAlpha + satH * (1 - couplingAlpha);
-        
+        delayedTapeSat[ch] = delayedTapeSat[ch] * couplingAlpha + satH * couplingBeta;
+
         v = dryHyst + (v - dryHyst) * fadeHysteresis;
         p3 += v * v; k3 = Math.max(k3, Math.abs(v));
 
         recUpsampled[j] = v;
 
         // Per-base-rate-sample: update meters, saturation, fades, reset sub-accumulators
-        if ((j + 1) % factor === 0) {
+        if (++recBaseCount === factor) {
+          recBaseCount = 0;
           updateStageMeterPwr(slInputXfmr,  ch, 1, p0 * ooF, k0);
           updateStageMeterPwr(slRecordAmp,  ch, 0, p0 * ooF, k0);
           updateStageMeterPwr(slRecordAmp,  ch, 1, p1 * ooF, k1);
@@ -1205,14 +1217,9 @@ class TapeProcessor extends AudioWorkletProcessor {
           updateStageMeterPwr(slHysteresis, ch, 0, pBias * ooF, kBias);
           updateStageMeterPwr(slHysteresis, ch, 1, p3 * ooF, k3);
 
-          const msi = maxSatInputXfmr * fadeInputXfmr;
-          satInputXfmr[ch] += (msi - satInputXfmr[ch]) * (msi > satInputXfmr[ch] ? attackDelta : releaseDelta);
-
-          const msr = maxSatRecordAmp * fadeRecordAmp;
-          satRecordAmp[ch] += (msr - satRecordAmp[ch]) * (msr > satRecordAmp[ch] ? attackDelta : releaseDelta);
-
-          const msh = maxSatHysteresis * fadeHysteresis;
-          satHysteresis[ch] += (msh - satHysteresis[ch]) * (msh > satHysteresis[ch] ? attackDelta : releaseDelta);
+          smoothSat(satInputXfmr, ch, maxSatInputXfmr, fadeInputXfmr);
+          smoothSat(satRecordAmp, ch, maxSatRecordAmp, fadeRecordAmp);
+          smoothSat(satHysteresis, ch, maxSatHysteresis, fadeHysteresis);
 
           fadeInputXfmr = advanceFade(fadeInputXfmr, bypassInputXfmr);
           fadeRecordAmp = advanceFade(fadeRecordAmp, bypassRecordAmp);
@@ -1291,8 +1298,8 @@ class TapeProcessor extends AudioWorkletProcessor {
       }
 
       const pbUpsampled = dsp.playbackOversampler.upsample(tapeBlock);
-      const pbOsLen = blockSize * factor;
-      const ooF = 1 / factor;
+      const pbSagBlock = this.sagBlocks[ch];
+      const pbIpBlockW = this.pbIpBlocks[ch];
 
       let pb0 = 0, pk0 = 0, pb1 = 0, pk1 = 0, pb2 = 0, pk2 = 0;
       let maxSatPlaybackAmp = 0, maxSatOutputXfmr = 0;
@@ -1301,7 +1308,8 @@ class TapeProcessor extends AudioWorkletProcessor {
       const effectiveOutputSat = Math.min(1, delayedOxfmrSat[ch] * couplingAmount);
       const targetOxfmrRload = 1e6 * (1.0 - effectiveOutputSat * 0.99) + 10000;
 
-      for (let j = 0; j < pbOsLen; j++) {
+      let pbBaseCount = 0;
+      for (let j = 0; j < osBlockLen; j++) {
 
         let v = pbUpsampled[j];
 
@@ -1312,7 +1320,7 @@ class TapeProcessor extends AudioWorkletProcessor {
         pb0 += v * v; pk0 = Math.max(pk0, Math.abs(v));
 
         // Shared power supply: record amp sag propagates to playback amp
-        const sharedSagV = this.sagBlocks[ch][j];
+        const sharedSagV = pbSagBlock[j];
         if (sharedSagV > 0) dsp.playbackAmp.setSagVoltage(sharedSagV);
 
         // PlaybackEQ → playbackAmp grid current loads the repro chain output.
@@ -1336,13 +1344,13 @@ class TapeProcessor extends AudioWorkletProcessor {
         v = dsp.playbackAmp.process(v, 0, targetOxfmrRload) * trimPlaybackAmp;
         if (!Number.isFinite(v)) { this._dbgNanAmp++; v = 0; }
         maxSatPlaybackAmp = Math.max(maxSatPlaybackAmp, dsp.playbackAmp.getSaturationDepth());
-        
-        this.pbIpBlocks[ch][j] = dsp.playbackAmp.getPlateCurrent();
-        
+
+        pbIpBlockW[j] = dsp.playbackAmp.getPlateCurrent();
+
         // Update playback grid current coupling with low-pass smoothing
         const targetPbIg = dsp.playbackAmp.getGridCurrent();
-        delayedPbIg[ch] = delayedPbIg[ch] * couplingAlpha + targetPbIg * (1 - couplingAlpha);
-        
+        delayedPbIg[ch] = delayedPbIg[ch] * couplingAlpha + targetPbIg * couplingBeta;
+
         v = dryPamp + (v - dryPamp) * fadePlaybackAmp;
         pb1 += v * v; pk1 = Math.max(pk1, Math.abs(v));
 
@@ -1350,28 +1358,26 @@ class TapeProcessor extends AudioWorkletProcessor {
         v = dsp.outputXfmr.process(v) * trimOutputXfmr;
         const satO = dsp.outputXfmr.getSaturationDepth();
         maxSatOutputXfmr = Math.max(maxSatOutputXfmr, satO);
-        
+
         // Update output transformer saturation coupling with low-pass smoothing
-        delayedOxfmrSat[ch] = delayedOxfmrSat[ch] * couplingAlpha + satO * (1 - couplingAlpha);
-        
+        delayedOxfmrSat[ch] = delayedOxfmrSat[ch] * couplingAlpha + satO * couplingBeta;
+
         v = dryOxfmr + (v - dryOxfmr) * fadeOutputXfmr;
         pb2 += v * v; pk2 = Math.max(pk2, Math.abs(v));
 
         pbUpsampled[j] = v;
 
         // Per-base-rate-sample: update meters, saturation, fades, reset sub-accumulators
-        if ((j + 1) % factor === 0) {
+        if (++pbBaseCount === factor) {
+          pbBaseCount = 0;
           updateStageMeterPwr(slPlaybackEQ,   ch, 1, pb0 * ooF, pk0);
           updateStageMeterPwr(slPlaybackAmp,  ch, 0, pb0 * ooF, pk0);
           updateStageMeterPwr(slPlaybackAmp,  ch, 1, pb1 * ooF, pk1);
           updateStageMeterPwr(slOutputXfmr,   ch, 0, pb1 * ooF, pk1);
           updateStageMeterPwr(slOutputXfmr,   ch, 1, pb2 * ooF, pk2);
 
-          const msp = maxSatPlaybackAmp * fadePlaybackAmp;
-          satPlaybackAmp[ch] += (msp - satPlaybackAmp[ch]) * (msp > satPlaybackAmp[ch] ? attackDelta : releaseDelta);
-
-          const mso = maxSatOutputXfmr * fadeOutputXfmr;
-          satOutputXfmr[ch] += (mso - satOutputXfmr[ch]) * (mso > satOutputXfmr[ch] ? attackDelta : releaseDelta);
+          smoothSat(satPlaybackAmp, ch, maxSatPlaybackAmp, fadePlaybackAmp);
+          smoothSat(satOutputXfmr, ch, maxSatOutputXfmr, fadeOutputXfmr);
 
           fadePlaybackAmp = advanceFade(fadePlaybackAmp, bypassPlaybackAmp);
           fadePlaybackEQ = advanceFade(fadePlaybackEQ, bypassPlaybackEQ);
@@ -1389,12 +1395,14 @@ class TapeProcessor extends AudioWorkletProcessor {
         let x = outputBlock[i];
 
         if (!Number.isFinite(x)) x = 0;
-        const clampedOutput = clampAnalogOutput(x, ioMapping);
-        x = clampedOutput.value;
-        if (clampedOutput.clamped && ch < 2) dbgClampHits[ch]++;
+        // clampAnalogOutput inlined — avoids { value, clamped } allocation per sample
+        if (x > analogClamp) { x = analogClamp; if (ch < 2) dbgClampHits[ch]++; }
+        else if (x < -analogClamp) { x = -analogClamp; if (ch < 2) dbgClampHits[ch]++; }
 
-        const pluginOutput = scalePluginOutput(x, pluginOutputTrim, outputGain, ioMapping);
-        updateStageMeter(slOutput, ch, 0, pluginOutput.analog);
+        // scalePluginOutput inlined — avoids { analog, digital } allocation per sample
+        const analogOut = x * pluginOutputTrim * outputGain;
+        const digitalOut = Math.max(-2, Math.min(2, analogOut * analogToDigital));
+        updateStageMeter(slOutput, ch, 0, analogOut);
 
         const globalTarget = this.bypassed ? 1 : 0;
         if (bypassFade !== globalTarget) {
@@ -1403,7 +1411,6 @@ class TapeProcessor extends AudioWorkletProcessor {
         }
 
         // Convert analog back to digital, applying global bypass crossfade
-        const digitalOut = pluginOutput.digital;
         let finalOut = inp[i] * bypassFade + digitalOut * (1 - bypassFade);
         if (!Number.isFinite(finalOut)) {
           if (ch < 2) dbgOutNonFinite[ch]++;
@@ -1420,12 +1427,12 @@ class TapeProcessor extends AudioWorkletProcessor {
 
         // Meter the plugin-side analog-domain output separately from the
         // digital return path so UI calibration stays outside the machine model.
-        updateStageMeter(slOutput, ch, 1, pluginOutput.analog);
+        updateStageMeter(slOutput, ch, 1, analogOut);
 
-        const power = pluginOutput.analog * pluginOutput.analog;
+        const power = analogOut * analogOut;
         const vuCoeff = power > this.vuPower[ch] ? attackCoeff : releaseCoeff;
         this.vuPower[ch] = vuCoeff * this.vuPower[ch] + (1 - vuCoeff) * power;
-        this.peakHold[ch] = Math.max(Math.abs(pluginOutput.analog), this.peakHold[ch] * peakRelCoeff);
+        this.peakHold[ch] = Math.max(Math.abs(analogOut), this.peakHold[ch] * peakRelCoeff);
       }
     }
 
